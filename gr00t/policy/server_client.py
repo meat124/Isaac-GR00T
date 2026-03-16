@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import io
+import logging
 from typing import Any, Callable
 
 import msgpack
@@ -10,6 +11,9 @@ from gr00t.data.types import ModalityConfig
 from gr00t.data.utils import to_json_serializable
 
 from .policy import BasePolicy
+
+
+logger = logging.getLogger(__name__)
 
 
 class MsgSerializer:
@@ -62,7 +66,7 @@ class PolicyServer:
         policy: BasePolicy,
         host: str = "*",
         port: int = 5555,
-        api_token: str = None,
+        api_token: str | None = None,
     ):
         self.policy = policy
         self.running = True
@@ -82,6 +86,11 @@ class PolicyServer:
             getattr(self.policy, "get_modality_config", lambda: {}),
             requires_input=False,
         )
+        self.register_endpoint(
+            "get_server_metadata",
+            self._handle_get_server_metadata,
+            requires_input=False,
+        )
 
     def _kill_server(self):
         """
@@ -94,6 +103,29 @@ class PolicyServer:
         Simple ping handler that returns a success message.
         """
         return {"status": "ok", "message": "Server is running"}
+
+    def _handle_get_server_metadata(self) -> dict[str, Any]:
+        """Return metadata useful for external orchestration clients."""
+        metadata: dict[str, Any] = {
+            "status": "ok",
+            "server_type": "gr00t_policy_server",
+            "available_endpoints": sorted(self._endpoints.keys()),
+        }
+
+        modality_cfg = getattr(self.policy, "get_modality_config", lambda: {})()
+        if isinstance(modality_cfg, dict):
+            action_cfg = modality_cfg.get("action")
+            if action_cfg is not None:
+                action_keys = list(getattr(action_cfg, "modality_keys", []) or [])
+                delta_indices = list(getattr(action_cfg, "delta_indices", []) or [])
+                metadata["action_keys"] = action_keys
+                metadata["action_horizon"] = len(delta_indices)
+
+        policy_metadata = getattr(self.policy, "metadata", None)
+        if isinstance(policy_metadata, dict):
+            metadata.update(policy_metadata)
+
+        return metadata
 
     def register_endpoint(self, name: str, handler: Callable, requires_input: bool = True):
         """
@@ -116,7 +148,7 @@ class PolicyServer:
 
     def run(self):
         addr = self.socket.getsockopt_string(zmq.LAST_ENDPOINT)
-        print(f"Server is ready and listening on {addr}")
+        logger.info("Server is ready and listening on %s", addr)
         while self.running:
             try:
                 message = self.socket.recv()
@@ -142,14 +174,13 @@ class PolicyServer:
                 )
                 self.socket.send(MsgSerializer.to_bytes(result))
             except Exception as e:
-                print(f"Error in server: {e}")
-                import traceback
-
-                print(traceback.format_exc())
+                logger.exception("Error in server: %s", e)
                 self.socket.send(MsgSerializer.to_bytes({"error": str(e)}))
 
     @staticmethod
-    def start_server(policy: BasePolicy, port: int, host: str = "*", api_token: str = None):
+    def start_server(
+        policy: BasePolicy, port: int, host: str = "*", api_token: str | None = None
+    ):
         server = PolicyServer(policy, host=host, port=port, api_token=api_token)
         server.run()
 
@@ -160,7 +191,7 @@ class PolicyClient(BasePolicy):
         host: str = "localhost",
         port: int = 5555,
         timeout_ms: int = 15000,
-        api_token: str = None,
+        api_token: str | None = None,
         strict: bool = False,
     ):
         super().__init__(strict=strict)
@@ -172,9 +203,12 @@ class PolicyClient(BasePolicy):
         self._init_socket()
 
     def _init_socket(self):
-        """Initialize or reinitialize the socket with current settings"""
+        """Initialize or reinitialize the socket with current settings."""
         self.socket = self.context.socket(zmq.REQ)
         self.socket.connect(f"tcp://{self.host}:{self.port}")
+        # Apply request/response timeouts so client calls fail fast.
+        self.socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+        self.socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
 
     def ping(self) -> bool:
         try:
@@ -218,9 +252,19 @@ class PolicyClient(BasePolicy):
         return response
 
     def __del__(self):
-        """Cleanup resources on destruction"""
-        self.socket.close()
-        self.context.term()
+        """Cleanup resources on destruction."""
+        socket = getattr(self, "socket", None)
+        if socket is not None:
+            try:
+                socket.close(0)
+            except Exception:  # noqa: BLE001
+                pass
+        context = getattr(self, "context", None)
+        if context is not None:
+            try:
+                context.term()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _get_action(
         self, observation: dict[str, Any], options: dict[str, Any] | None = None
@@ -235,6 +279,9 @@ class PolicyClient(BasePolicy):
 
     def get_modality_config(self) -> dict[str, ModalityConfig]:
         return self.call_endpoint("get_modality_config", requires_input=False)
+
+    def get_server_metadata(self) -> dict[str, Any]:
+        return self.call_endpoint("get_server_metadata", requires_input=False)
 
     def check_observation(self, observation: dict[str, Any]) -> None:
         raise NotImplementedError(
