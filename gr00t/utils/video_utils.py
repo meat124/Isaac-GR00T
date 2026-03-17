@@ -1,3 +1,4 @@
+import functools
 import json
 import logging
 import math
@@ -51,6 +52,7 @@ _INCOMPATIBLE_BACKEND_CODECS: dict[str, set[str]] = {
 _BACKEND_FALLBACK_ORDER = ["torchcodec", "decord", "pyav", "ffmpeg"]
 
 
+@functools.lru_cache(maxsize=None)
 def _is_backend_available(backend: str) -> bool:
     """Check if a video backend is available without importing at module level."""
     if backend == "torchcodec":
@@ -398,6 +400,17 @@ def get_frames_by_indices(
         cap.release()
         frames = np.array(frames)
         return frames
+    elif video_backend == "pyav":
+        indices_set = set(int(i) for i in indices)
+        result: dict[int, np.ndarray] = {}
+        with av.open(video_path) as container:
+            for frame_idx, frame in enumerate(container.decode(video=0)):
+                if frame_idx in indices_set:
+                    result[frame_idx] = frame.to_ndarray(format="rgb24")
+                if len(result) == len(indices_set):
+                    break
+        frames = [result[int(i)] for i in indices]
+        return np.stack(frames)
     else:
         raise NotImplementedError
 

@@ -56,6 +56,7 @@ class DataConfig:
     shard_size: int = 2**10
     episode_sampling_rate: float = 0.1
     num_shards_per_epoch: int = int(1e5)
+    num_episodes: int | None = None
 
     # Override statistics from the pretrained checkpoint
     override_pretraining_statistics: bool = False

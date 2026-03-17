@@ -116,3 +116,10 @@ class FinetuneConfig:
 
     num_shards_per_epoch: int = int(1e5)
     """Number of shards to use for the dataset. reduce this number if vram is limited."""
+
+    num_episodes: int | None = None
+    """Limit training to the first N episodes (after shuffle). If None, use all episodes."""
+
+    video_backend: str = "pyav"
+    """Video decoding backend to use. Options: 'torchcodec', 'decord', 'pyav', 'ffmpeg'.
+    Defaults to 'pyav' which is always available. Use 'torchcodec' or 'decord' for faster decoding if installed."""
