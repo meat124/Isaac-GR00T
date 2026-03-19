@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=PuttingCupintotheDish_demo100
-#SBATCH --partition=suma_rtx4090
+#SBATCH --job-name=PuttingCupintotheDish_demo300_a6000_adamw_torch
+#SBATCH --partition=gigabyte_a6000
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=/lustre/meat124/Isaac-GR00T/logs/%x_%j.out
 #SBATCH --error=/lustre/meat124/Isaac-GR00T/logs/%x_%j.err
 
@@ -47,15 +47,15 @@ uv run python gr00t/experiment/launch_finetune.py \
     --modality-config-path examples/rby1/rby1_config.py \
     --num-gpus 1 \
     --output-dir "$OUTPUT_DIR" \
-    --save-total-limit 5 \
+    --save-total-limit 2 \
     --save-steps 2000 \
-    --max-steps 10000 \
+    --max-steps 20000 \
     --use-wandb \
-    --global-batch-size 8 \
-    --gradient-accumulation-steps 32 \
+    --global-batch-size 32 \
+    --gradient-accumulation-steps 1 \
     --color-jitter-params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
     --dataloader-num-workers 4 \
-    --num-episodes 100 \
+    --num-episodes 300 \
     "$@"
 
 echo "=============================="
