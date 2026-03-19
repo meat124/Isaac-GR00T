@@ -140,11 +140,20 @@ def run(config: Config):
     omegaconf_config["save_steps"] = config.training.save_steps
     OmegaConf.save(omegaconf_config, save_cfg_dir / "conf.yaml", resolve=True)
     wandb_config_file = output_dir / "wandb_config.json"
+
+    # Load existing wandb run ID if present (for resume)
+    existing_wandb_run_id = None
+    if wandb_config_file.exists():
+        with open(wandb_config_file) as f:
+            existing_wandb_config = json.load(f)
+            existing_wandb_run_id = existing_wandb_config.get("wandb_run_id")
+
     with open(wandb_config_file, "w") as f:
         json.dump(
             {
                 "project": config.training.wandb_project,
                 "run_id": experiment_name,
+                **({"wandb_run_id": existing_wandb_run_id} if existing_wandb_run_id else {}),
             },
             f,
         )
@@ -162,9 +171,22 @@ def run(config: Config):
         wandb.init(
             project=config.training.wandb_project,
             name=experiment_name,
+            id=existing_wandb_run_id,
+            resume="allow" if existing_wandb_run_id else None,
             config=config_dict,
             tags=[config.data.mode],
         )
+
+        # Save actual wandb run ID for future resumes
+        with open(wandb_config_file, "w") as f:
+            json.dump(
+                {
+                    "project": config.training.wandb_project,
+                    "run_id": experiment_name,
+                    "wandb_run_id": wandb.run.id,
+                },
+                f,
+            )
 
     # Setup model training pipeline.
     pipeline = MODEL_REGISTRY.get(type(config.model))(config, save_cfg_dir)
