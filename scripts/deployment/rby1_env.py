@@ -110,22 +110,29 @@ class _RealsenseCamera:
                 f"Camera serial {self._serial} not found. Connected RealSense serials: {connected_serials}"
             )
 
-        try:
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
             try:
-                self._pipeline.stop()
-            except Exception:  # noqa: BLE001
-                pass
-            self._pipeline.start(self._config)
-            self._started = True
-            for _ in range(30):
-                self._pipeline.wait_for_frames(timeout_ms=1000)
-        except Exception as exc:  # noqa: BLE001
-            try:
-                self._pipeline.stop()
-            except Exception:  # noqa: BLE001
-                pass
-            self._started = False
-            raise RuntimeError(f"Failed to start camera {self._serial}: {exc}") from exc
+                try:
+                    self._pipeline.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._pipeline.start(self._config)
+                self._started = True
+                for _ in range(30):
+                    self._pipeline.wait_for_frames(timeout_ms=1000)
+                return  # success
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    self._pipeline.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._started = False
+                if attempt < max_retries:
+                    import time as _time
+                    _time.sleep(2.0)
+                    continue
+                raise RuntimeError(f"Failed to start camera {self._serial}: {exc}") from exc
 
     def stop(self) -> None:
         if not self._started:
@@ -231,8 +238,10 @@ class RBY1Environment:
             ),
         }
 
+        import time as _time
         for cam in self._cameras.values():
             cam.start()
+            _time.sleep(0.5)  # USB settle between camera starts
 
         self._robot = robot if robot is not None else self._create_robot(robot_ip)
         self._robot.connect()
