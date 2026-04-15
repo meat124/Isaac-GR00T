@@ -292,6 +292,8 @@ class Gr00tN1d6ActionHead(nn.Module):
         state_features: torch.Tensor,
         embodiment_id: torch.Tensor,
         backbone_output: BatchFeature,
+        prev_chunk_left_over: torch.Tensor | None = None,
+        rtc_config: "GR00TRTCConfig | None" = None,
     ) -> BatchFeature:
         """
         Generate actions using the flow matching diffusion process.
@@ -301,6 +303,9 @@ class Gr00tN1d6ActionHead(nn.Module):
             state_features: [B, state_horizon, input_embedding_dim]
             embodiment_id: [B] (embodiment IDs)
             backbone_output: Output from the backbone model
+            prev_chunk_left_over: Unexecuted tail from previous action chunk for
+                RTC guidance. Shape (B, T_prev, A). None on the first chunk.
+            rtc_config: RTC configuration. If None or not enabled, no guidance is applied.
         """
         vl_embeds = backbone_features
 
@@ -314,6 +319,12 @@ class Gr00tN1d6ActionHead(nn.Module):
         )
 
         dt = 1.0 / self.num_inference_timesteps
+
+        # Create RTC processor if enabled
+        rtc_proc = None
+        if prev_chunk_left_over is not None and rtc_config is not None and rtc_config.enabled:
+            from gr00t.model.gr00t_n1d6.rtc_groot import GR00TRTCProcessor
+            rtc_proc = GR00TRTCProcessor(rtc_config)
 
         # Run denoising steps.
         for t in range(self.num_inference_timesteps):
@@ -355,6 +366,13 @@ class Gr00tN1d6ActionHead(nn.Module):
 
             # Update actions using euler integration.
             actions = actions + dt * pred_velocity
+
+            # Apply RTC guidance after each Euler step.
+            # noise_level: high early (strong guidance), low late (weak guidance)
+            if rtc_proc is not None:
+                noise_level = 1.0 - (t + 1) * dt
+                actions = rtc_proc.guide_prediction(actions, prev_chunk_left_over, noise_level)
+
         return BatchFeature(
             data={
                 "action_pred": actions,
@@ -364,7 +382,13 @@ class Gr00tN1d6ActionHead(nn.Module):
         )
 
     @torch.no_grad()
-    def get_action(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+    def get_action(
+        self,
+        backbone_output: BatchFeature,
+        action_input: BatchFeature,
+        prev_chunk_left_over: torch.Tensor | None = None,
+        rtc_config: "GR00TRTCConfig | None" = None,
+    ) -> BatchFeature:
         """
         Generate actions using the flow matching diffusion process.
 
@@ -375,6 +399,8 @@ class Gr00tN1d6ActionHead(nn.Module):
             action_input: Input containing:
                 - state: [B, state_dim]
                 - embodiment_id: [B] (embodiment IDs)
+            prev_chunk_left_over: Unexecuted tail from previous chunk for RTC.
+            rtc_config: RTC configuration.
 
         Returns:
             BatchFeature containing:
@@ -386,6 +412,8 @@ class Gr00tN1d6ActionHead(nn.Module):
             state_features=features.state_features,
             embodiment_id=action_input.embodiment_id,
             backbone_output=backbone_output,
+            prev_chunk_left_over=prev_chunk_left_over,
+            rtc_config=rtc_config,
         )
 
     @property
@@ -512,16 +540,33 @@ class Gr00tN1d6(PreTrainedModel):
 
         return action_outputs
 
-    def get_action(self, inputs: dict) -> BatchFeature:
+    def get_action(
+        self,
+        inputs: dict | None = None,
+        prev_chunk_left_over: torch.Tensor | None = None,
+        rtc_config: "GR00TRTCConfig | None" = None,
+        **kwargs,
+    ) -> BatchFeature:
         """
         Generate actions using the complete model.
+
+        Args:
+            inputs: Dictionary of model inputs. If None, kwargs are used as inputs.
+            prev_chunk_left_over: Unexecuted tail from previous chunk for RTC.
+            rtc_config: RTC configuration.
         """
+        if inputs is None:
+            inputs = kwargs
         # Prepare inputs for backbone and action head
         backbone_inputs, action_inputs = self.prepare_input(inputs)
 
         # Forward through backbone
         backbone_outputs = self.backbone(backbone_inputs)
-        action_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
+        action_outputs = self.action_head.get_action(
+            backbone_outputs, action_inputs,
+            prev_chunk_left_over=prev_chunk_left_over,
+            rtc_config=rtc_config,
+        )
 
         return action_outputs
 

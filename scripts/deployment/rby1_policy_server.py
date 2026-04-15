@@ -7,6 +7,7 @@ from pathlib import Path
 import tyro
 
 from gr00t.data.embodiment_tags import EmbodimentTag
+from gr00t.model.gr00t_n1d6.rtc_groot import GR00TRTCConfig
 from gr00t.policy.gr00t_policy import Gr00tPolicy
 from gr00t.policy.server_client import PolicyServer
 
@@ -32,6 +33,16 @@ class Args:
     embodiment_tag: EmbodimentTag = EmbodimentTag.NEW_EMBODIMENT
     ensure_processor_symlinks: bool = True
     denoising_steps: int | None = None
+
+    # RTC (Real-Time Chunking) options
+    use_rtc: bool = False
+    """Enable Real-Time Chunking guidance during denoising."""
+    rtc_max_guidance_weight: float = 1.0
+    """Maximum guidance weight for RTC blending (clamped to 1.0 for direct blending)."""
+    rtc_execution_horizon: int = 8
+    """Number of actions executed per chunk; determines the left-over tail size. Must match EXECUTE_CHUNK_SIZE in the notebook."""
+    rtc_schedule: str = "linear"
+    """Weight schedule along the action prefix: 'linear', 'exp', 'ones', or 'zeros'."""
 
 
 def _maybe_create_symlink(src: Path, dst: Path) -> None:
@@ -70,6 +81,13 @@ def main(args: Args) -> None:
         model_path=str(model_path),
         device=args.device,
         strict=args.strict,
+        rtc_config=GR00TRTCConfig(
+            enabled=args.use_rtc,
+            max_guidance_weight=args.rtc_max_guidance_weight,
+            execution_horizon=args.rtc_execution_horizon,
+            schedule=args.rtc_schedule,
+        ) if args.use_rtc else None,
+        execute_chunk_size=args.rtc_execution_horizon if args.use_rtc else None,
     )
 
     if args.denoising_steps is not None:
@@ -97,15 +115,20 @@ def main(args: Args) -> None:
         "action_keys": action_keys,
         "action_horizon": action_horizon,
         "num_inference_timesteps": int(policy.model.action_head.num_inference_timesteps),
+        "rtc_enabled": args.use_rtc,
+        "rtc_execution_horizon": args.rtc_execution_horizon if args.use_rtc else None,
+        "rtc_schedule": args.rtc_schedule if args.use_rtc else None,
+        "rtc_max_guidance_weight": args.rtc_max_guidance_weight if args.use_rtc else None,
     })
 
     logging.info(
-        "Starting RBY1 GR00T policy server | host=%s port=%d model=%s horizon=%d denoising_steps=%d",
+        "Starting RBY1 GR00T policy server | host=%s port=%d model=%s horizon=%d denoising_steps=%d rtc=%s",
         args.host,
         args.port,
         model_path,
         action_horizon,
         int(policy.model.action_head.num_inference_timesteps),
+        f"on(exec_horizon={args.rtc_execution_horizon}, weight={args.rtc_max_guidance_weight}, sched={args.rtc_schedule})" if args.use_rtc else "off",
     )
 
     server = PolicyServer(policy=policy, host=args.host, port=args.port)

@@ -15,6 +15,7 @@ from transformers import AutoModel, AutoProcessor
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.data.interfaces import BaseProcessor
 from gr00t.data.types import MessageType, ModalityConfig, VLAStepData
+from gr00t.model.gr00t_n1d6.rtc_groot import GR00TRTCConfig
 
 from .policy import BasePolicy, PolicyWrapper
 
@@ -63,6 +64,8 @@ class Gr00tPolicy(BasePolicy):
         *,
         device: int | str,
         strict: bool = True,
+        rtc_config: GR00TRTCConfig | dict | None = None,
+        execute_chunk_size: int | None = None,
     ):
         """Initialize the Gr00t Policy.
 
@@ -71,6 +74,9 @@ class Gr00tPolicy(BasePolicy):
             model_path: Path to the pretrained model checkpoint directory
             device: Device to run the model on (e.g., 'cuda:0', 0, 'cpu')
             strict: Whether to enforce strict input validation (default: True)
+            rtc_config: RTC configuration. Can be a GR00TRTCConfig, a dict, or None.
+            execute_chunk_size: Number of actions to execute per chunk before re-querying.
+                Required for RTC to compute the unexecuted tail. If None, RTC is disabled.
         """
         # Import this to register all models.
         import gr00t.model  # noqa: F401
@@ -100,6 +106,13 @@ class Gr00tPolicy(BasePolicy):
         assert len(language_keys) == 1, "Only one language key is supported"
         assert len(language_delta_indices) == 1, "Only one language delta index is supported"
         self.language_key = language_keys[0]
+
+        # RTC state
+        if isinstance(rtc_config, dict):
+            rtc_config = GR00TRTCConfig.from_dict(rtc_config)
+        self._rtc_config = rtc_config or GR00TRTCConfig()
+        self._execute_chunk_size = execute_chunk_size
+        self._prev_raw_action_pred: torch.Tensor | None = None  # normalized space
 
     def _unbatch_observation(self, value: dict[str, Any]) -> list[dict[str, Any]]:
         """Unbatch a batched observation into a list of single observations.
@@ -338,10 +351,30 @@ class Gr00tPolicy(BasePolicy):
         collated_inputs = self.collate_fn(processed_inputs)
         collated_inputs = _rec_to_dtype(collated_inputs, dtype=torch.bfloat16)
 
-        # Step 4: Run model inference to predict actions
+        # Step 4: Compute RTC left-over from previous chunk
+        prev_chunk_left_over = None
+        if (
+            self._rtc_config.enabled
+            and self._prev_raw_action_pred is not None
+            and self._execute_chunk_size is not None
+        ):
+            exec_size = self._execute_chunk_size
+            prev_chunk_left_over = self._prev_raw_action_pred[:, exec_size:, :]
+
+        # Step 5: Run model inference to predict actions
+        # collated_inputs is {"inputs": batch_dict} — unpack so the model receives
+        # inputs=batch_dict (matching the original `**collated_inputs` convention).
         with torch.inference_mode():
-            model_pred = self.model.get_action(**collated_inputs)
+            model_pred = self.model.get_action(
+                **collated_inputs,
+                prev_chunk_left_over=prev_chunk_left_over,
+                rtc_config=self._rtc_config,
+            )
         normalized_action = model_pred["action_pred"].float()
+
+        # Save raw normalized prediction for next RTC pass
+        if self._rtc_config.enabled:
+            self._prev_raw_action_pred = normalized_action.clone().detach()
 
         # Step 5: Decode actions from normalized space back to physical units
         batched_states = {}
@@ -406,7 +439,7 @@ class Gr00tPolicy(BasePolicy):
         return self.modality_configs
 
     def reset(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Reset the policy to its initial state.
+        """Reset the policy to its initial state, clearing RTC history.
 
         Args:
             options: Dictionary containing the options for the reset
@@ -414,6 +447,7 @@ class Gr00tPolicy(BasePolicy):
         Returns:
             Dictionary containing the info after resetting the policy
         """
+        self._prev_raw_action_pred = None
         return {}
 
 
