@@ -42,16 +42,16 @@ OUTPUT_DIR=examples/rby1/checkpoints/${SLURM_JOB_NAME}
 cd "$GR00T_DIR"
 mkdir -p "$GR00T_DIR/logs"
 
-# --- air-gapped compute node settings ---
-# Compute nodes have no internet. Models must already be in the HF cache
-# (pre-downloaded on the login node). These flags make all HF loads resolve
-# from cache and neutralize transformers' offline-unsafe mistral model_info call.
+# --- model loading ---
+# Load models from the HF cache (pre-downloaded on the login node) for fast,
+# reliable startup. GROOT_PATCH_MISTRAL neutralizes transformers 4.57.3's
+# offline-unsafe is_base_mistral() model_info call during tokenizer loading.
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export GROOT_HF_LOCAL_FIRST=1   # gr00t/__init__.py: resolve repo ids to local cache
 export GROOT_PATCH_MISTRAL=1    # gr00t/__init__.py: make _patch_mistral_regex offline-safe
-# wandb cannot reach the cloud from compute nodes; log offline and `wandb sync` later.
-export WANDB_MODE="${WANDB_MODE:-offline}"
+# Compute nodes have outbound internet, so log to wandb live (override with WANDB_MODE).
+export WANDB_MODE="${WANDB_MODE:-online}"
 
 echo "=============================="
 echo "Job ID       : $SLURM_JOB_ID"
