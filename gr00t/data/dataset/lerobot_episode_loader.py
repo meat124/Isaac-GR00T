@@ -1,4 +1,20 @@
 #!/usr/bin/env python
+
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 LeRobot Dataset Loader
 
@@ -18,6 +34,7 @@ Returns messages with VLAStepData as defined in types.py.
 
 from collections import defaultdict
 import json
+import logging
 from pathlib import Path
 import random
 from typing import Any
@@ -39,7 +56,7 @@ LEROBOT_MODALITY_FILENAME = "modality.json"
 LEROBOT_STATS_FILE_NAME = "stats.json"
 LEROBOT_RELATIVE_STATS_FILE_NAME = "relative_stats.json"
 
-ALLOWED_MODALITIES = ["video", "state", "action", "language"]
+ALLOWED_MODALITIES = ["video", "state", "action", "language", "mask"]
 DEFAULT_COLUMN_NAMES = {
     "state": "observation.state",
     "action": "action",
@@ -178,6 +195,7 @@ class LeRobotEpisodeLoader:
         self.feature_config = self.info_meta.get("features", {})
         self.data_path_pattern = self.info_meta["data_path"]
         self.video_path_pattern = self.info_meta.get("video_path")
+        self.mask_path_pattern = self.info_meta.get("mask_path")
         self.chunk_size = self.info_meta["chunks_size"]
         self.fps = self.info_meta.get("fps", 30)
 
@@ -220,35 +238,60 @@ class LeRobotEpisodeLoader:
             ValueError: If invalid modalities are specified
             AssertionError: If language modality configuration is invalid
         """
-        # Validate all modality configurations
+        # Filter out any modalities not handled by the dataset loader.
+        unknown_modalities = [m for m in modality_configs if m not in ALLOWED_MODALITIES]
+        if unknown_modalities:
+            logging.debug(
+                f"Skipping modalities not supported by dataset loader: {unknown_modalities}"
+            )
+            modality_configs = {
+                k: v for k, v in modality_configs.items() if k in ALLOWED_MODALITIES
+            }
         for modality in modality_configs:
-            if modality not in ALLOWED_MODALITIES:
-                raise ValueError(f"Invalid modality: {modality}")
             if modality == "language":
-                # Language modality has special constraints
-                assert len(modality_configs[modality].modality_keys) == 1, (
-                    "Language modality must have exactly one key"
+                # Language modality has special constraints.
+                # Some embodiments (e.g. OXE_DROID) define multiple language keys for
+                # training-time augmentation. At inference we only use the first key.
+                assert len(modality_configs[modality].modality_keys) >= 1, (
+                    "Language modality must have at least one key"
                 )
+                if len(modality_configs[modality].modality_keys) > 1:
+                    logging.warning(
+                        f"Language modality has {len(modality_configs[modality].modality_keys)} keys, "
+                        f"only the first key will be used: {modality_configs[modality].modality_keys[0]}"
+                    )
+                    modality_configs[modality] = ModalityConfig(
+                        delta_indices=modality_configs[modality].delta_indices,
+                        modality_keys=[modality_configs[modality].modality_keys[0]],
+                        sin_cos_embedding_keys=modality_configs[modality].sin_cos_embedding_keys,
+                        mean_std_embedding_keys=modality_configs[modality].mean_std_embedding_keys,
+                        action_configs=modality_configs[modality].action_configs[:1]
+                        if modality_configs[modality].action_configs is not None
+                        else None,
+                    )
                 assert modality_configs[modality].delta_indices == [0], (
                     "Only single timestep is supported for language modality"
                 )
 
-        # Validate video modality_keys against modality.json.
-        # Each key in modality_configs["video"].modality_keys must exist in
-        # modality.json["video"], otherwise _load_video_data will fail with
-        # a confusing KeyError when trying to resolve the original video key.
+        # Build mapping from config video keys to dataset modality_meta video keys.
+        # This handles the case where the model's pretrained config uses different
+        # video key names than the dataset's modality.json (e.g., N1.6 vs N1.7 naming).
+        self._video_key_mapping: dict[str, str] = {}
         if "video" in modality_configs and "video" in self.modality_meta:
-            config_keys = set(modality_configs["video"].modality_keys)
-            meta_keys = set(self.modality_meta["video"].keys())
-            missing_keys = config_keys - meta_keys
-            if missing_keys:
-                raise ValueError(
-                    f"Video modality_keys {sorted(missing_keys)} in modality_config "
-                    f"not found in modality.json. "
-                    f"modality_config expects: {sorted(config_keys)}, "
-                    f"modality.json defines: {sorted(meta_keys)}. "
-                    f"Please ensure modality.json and your modality_config use the "
-                    f"same video key names."
+            config_keys = modality_configs["video"].modality_keys
+            meta_keys = list(self.modality_meta["video"].keys())
+            needs_mapping = any(k not in self.modality_meta["video"] for k in config_keys)
+            if needs_mapping:
+                assert len(config_keys) == len(meta_keys), (
+                    f"Cannot auto-map video keys: config has {len(config_keys)} keys "
+                    f"{config_keys} but dataset modality meta has {len(meta_keys)} keys "
+                    f"{meta_keys}. Counts must match for positional mapping."
+                )
+                for config_key, meta_key in zip(config_keys, meta_keys):
+                    self._video_key_mapping[config_key] = meta_key
+                logging.warning(
+                    f"Video key mismatch between model config and dataset. "
+                    f"Auto-mapping by position: {self._video_key_mapping}"
                 )
 
         return modality_configs
@@ -375,9 +418,11 @@ class LeRobotEpisodeLoader:
         image_keys = self.modality_configs["video"].modality_keys
 
         for image_key in image_keys:
-            # Resolve the original key used in video file naming
-            original_key = self.modality_meta["video"][image_key].get(
-                "original_key", f"observation.images.{image_key}"
+            # Resolve the original key used in video file naming.
+            # Use the video key mapping if the config key differs from the dataset meta key.
+            meta_key = self._video_key_mapping.get(image_key, image_key)
+            original_key = self.modality_meta["video"][meta_key].get(
+                "original_key", f"observation.images.{meta_key}"
             )
             assert original_key in self.feature_config, (
                 f"Original key {original_key} not found in feature config"
@@ -400,6 +445,56 @@ class LeRobotEpisodeLoader:
             )
 
         return video_data
+
+    def _load_mask_file(self, mask_path: Path, indices: np.ndarray) -> np.ndarray:
+        """Load masks from npz/npy file at specified indices."""
+        if not mask_path.exists():
+            raise FileNotFoundError(f"Mask file does not exist: {mask_path}")
+        suffix = mask_path.suffix.lower()
+        if suffix not in {".npz", ".npy"}:
+            raise ValueError(f"Only .npz or .npy mask files are supported: {mask_path}")
+
+        if suffix == ".npy":
+            masks = np.load(mask_path)
+        else:
+            npz_data = np.load(mask_path)
+            if "arr_0" in npz_data:
+                masks = npz_data["arr_0"]
+            elif len(npz_data.files) == 1:
+                masks = npz_data[npz_data.files[0]]
+            else:
+                raise ValueError(f"Mask npz must contain a single array or 'arr_0': {mask_path}")
+
+        if masks.ndim == 2:
+            masks = masks[None, ...]
+
+        return masks[indices]
+
+    def _load_mask_data(self, episode_index: int, indices: np.ndarray) -> dict[str, np.ndarray]:
+        """
+        Load mask data for all configured mask views at specified indices.
+        """
+        mask_data = {}
+
+        if not self.mask_path_pattern or "mask" not in self.modality_configs:
+            return mask_data
+
+        chunk_idx = episode_index // self.chunk_size
+        mask_keys = self.modality_configs["mask"].modality_keys
+
+        for mask_key in mask_keys:
+            mask_meta = self.modality_meta.get("mask", {}).get(mask_key, {})
+            original_key = mask_meta.get("original_key", mask_key)
+            mask_filename = self.mask_path_pattern.format(
+                episode_chunk=chunk_idx,
+                episode_index=episode_index,
+                mask_key=original_key,
+                video_key=original_key,
+            )
+            mask_path = self.dataset_path / mask_filename
+            mask_data[mask_key] = self._load_mask_file(mask_path, indices)
+
+        return mask_data
 
     def get_dataset_statistics(self) -> dict[str, Any]:
         """
@@ -513,6 +608,14 @@ class LeRobotEpisodeLoader:
                 f"Video data for {key} has length {len(video_data[key])} but dataframe has length {len(df)}"
             )
             df[f"video.{key}"] = [frame for frame in video_data[key]]
+
+        # Load synchronized mask data
+        mask_data = self._load_mask_data(episode_id, np.arange(actual_length))
+        for key in mask_data.keys():
+            assert len(mask_data[key]) == len(df), (
+                f"Mask data for {key} has length {len(mask_data[key])} but dataframe has length {len(df)}"
+            )
+            df[f"mask.{key}"] = [mask for mask in mask_data[key]]
 
         return df
 

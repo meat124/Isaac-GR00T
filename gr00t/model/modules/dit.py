@@ -1,3 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from contextlib import nullcontext
+import os
 from typing import Optional
 
 from diffusers import ConfigMixin, ModelMixin
@@ -7,6 +24,38 @@ from diffusers.models.embeddings import SinusoidalPositionalEmbedding, TimestepE
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+
+def _is_spark_sm121() -> bool:
+    if not torch.cuda.is_available():
+        return False
+
+    major, minor = torch.cuda.get_device_capability()
+    return (major, minor) == (12, 1)
+
+
+def _should_force_math_sdpa() -> bool:
+    override = os.environ.get("GR00T_DIT_SDPA_MODE")
+    if override == "math":
+        return True
+    if override == "default":
+        return False
+
+    return _is_spark_sm121()
+
+
+def _sdpa_context():
+    # Spark (sm121) currently hits noisy/broken PyTorch mem-efficient SDPA kernel dispatch.
+    # Force the safe math backend there; on every other platform this returns a no-op context.
+    if not _should_force_math_sdpa():
+        return nullcontext()
+
+    return torch.backends.cuda.sdp_kernel(
+        enable_flash=False,
+        enable_math=True,
+        enable_mem_efficient=False,
+        enable_cudnn=False,
+    )
 
 
 class TimestepEncoder(nn.Module):
@@ -145,13 +194,14 @@ class BasicTransformerBlock(nn.Module):
         if self.pos_embed is not None:
             norm_hidden_states = self.pos_embed(norm_hidden_states)
 
-        attn_output = self.attn1(
-            norm_hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            attention_mask=(
-                encoder_attention_mask if encoder_hidden_states is not None else attention_mask
-            ),
-        )
+        with _sdpa_context():
+            attn_output = self.attn1(
+                norm_hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                attention_mask=(
+                    encoder_attention_mask if encoder_hidden_states is not None else attention_mask
+                ),
+            )
         if self.final_dropout:
             attn_output = self.final_dropout(attn_output)
 

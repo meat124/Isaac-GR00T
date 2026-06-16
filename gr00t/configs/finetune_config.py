@@ -1,7 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Finetune config used for single node post-training.
 from dataclasses import dataclass
-
-from gr00t.data.embodiment_tags import EmbodimentTag
 
 
 @dataclass
@@ -22,8 +35,8 @@ class FinetuneConfig:
     dataset_path: str
     """Path to the dataset root directory containing trajectory data for fine-tuning."""
 
-    embodiment_tag: EmbodimentTag
-    """Identifier specifying which embodiment (robot configuration) this fine-tuning run targets."""
+    embodiment_tag: str
+    """Embodiment tag (name or value, case-insensitive). See EmbodimentTag for known tags."""
 
     modality_config_path: str | None = None
     """
@@ -44,7 +57,7 @@ class FinetuneConfig:
     tune_diffusion_model: bool = True
     """If True, fine-tune the diffusion-based action decoder (if present in the model)."""
 
-    state_dropout_prob: float = 0.0
+    state_dropout_prob: float = 0.2
     """
     Dropout probability applied to state inputs for regularization during training.
     """
@@ -66,6 +79,24 @@ class FinetuneConfig:
 
     If None, applying the default color jitter augmentation from the pretrained model.
     """
+    extra_augmentation_config: str | None = None
+    """
+    JSON string for extra image augmentations (mask-based and others).
+
+    Expected keys include:
+      - "background_noise_transforms": list of dicts for noise on mask regions
+          - "target_mask_values": list of int (e.g., [0])
+          - "p": float (probability of applying)
+      - "masked_region_transforms": list of dicts for color tint on mask regions
+          - "target_mask_values": list of int (e.g., [4] or [5])
+          - "p": float (probability of applying)
+          - "alpha_range": [min, max] for random_tint intensity
+
+    Example: {"background_noise_transforms": [{"target_mask_values": [0], "p": 0.9}],
+              "masked_region_transforms": [{"target_mask_values": [4], "p": 1.0, "alpha_range": [0, 1]}]}
+
+    If None, no extra augmentations are applied.
+    """
 
     # --- Training Configuration ---
     global_batch_size: int = 64
@@ -83,6 +114,12 @@ class FinetuneConfig:
     output_dir: str = "./outputs"
     """Directory where model checkpoints, logs, and outputs are saved."""
 
+    experiment_name: str | None = None
+    """Optional experiment name used as the W&B run name. Defaults to the output directory basename."""
+
+    wandb_project: str = "finetune-gr00t-n1d7"
+    """W&B project name to log runs to."""
+
     save_steps: int = 1000
     """Frequency (in training steps) at which to save checkpoints."""
 
@@ -95,7 +132,7 @@ class FinetuneConfig:
     use_wandb: bool = False
     """
     If True, log metrics and artifacts to Weights & Biases (wandb).
-    The project is `finetune-gr00t-n1d6`.
+    The project is `finetune-gr00t-n1d7`.
     You need to login to wandb to view the logs.
     """
 
@@ -123,3 +160,11 @@ class FinetuneConfig:
     video_backend: str = "pyav"
     """Video decoding backend to use. Options: 'torchcodec', 'decord', 'pyav', 'ffmpeg'.
     Defaults to 'pyav' which is always available. Use 'torchcodec' or 'decord' for faster decoding if installed."""
+
+    save_only_model: bool = False
+    """If True, save only model weights (skip optimizer/scheduler/RNG states). Cannot resume training from these checkpoints."""
+
+    skip_weight_loading: bool = False
+    """If True, skip loading model weights from base_model_path (architecture only).
+    The processor (tokenizer/config) is still loaded from base_model_path.
+    Useful for CI/testing to skip the slow checkpoint shard loading."""

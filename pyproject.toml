@@ -1,7 +1,4 @@
-#This is the single project pyproject.toml
-
-[tool.uv.workspace]
-members = ["groot_infra"]
+# Default platform pyproject.toml (x86, GB200, and any non-Jetson GPU)
 
 [build-system]
 requires = ["setuptools>=67", "wheel", "pip"]
@@ -11,12 +8,13 @@ build-backend = "setuptools.build_meta"
 name = "gr00t"
 version = "0.1.0"
 requires-python = "==3.10.*"
-# Mirror the main repo's baseline dependencies so install behaves the same.
 dependencies = [
     "albumentations==1.4.18",
+    "huggingface-hub[cli]",
+    "opencv-python-headless>=4.5,<4.13",
     "av==16.1.0",
     "diffusers==0.35.1",
-    "dm-tree==0.1.8",
+    "dm-tree",
     "lmdb==1.7.5",
     "msgpack==1.1.0",
     "msgpack-numpy==0.4.8",
@@ -24,31 +22,39 @@ dependencies = [
     "peft==0.17.1",
     "termcolor==3.2.0",
     "torch==2.7.1",
-    "triton==3.3.1; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "torchvision==0.22.1",
-    "transformers==4.51.3",
+    "transformers==4.57.3",
     "tyro==0.9.17",
     "click==8.1.8",
     "datasets==3.6.0",
-    "cryptography>=44.0.0",
+    "cryptography==42.0.8",
     "einops==0.8.1",
     "gitpython==3.1.46",
+    "jsonlines==4.0.0",
     "gymnasium==1.2.2",
     "matplotlib==3.10.1",
     "numpy==1.26.4",
     "omegaconf==2.3.0",
     "scipy==1.15.3",
-    # torchcodec does not currently publish Linux aarch64 wheels.
-    # TODO: build from source when ARM support is required.
-    "torchcodec==0.4.0; platform_machine != 'aarch64' or sys_platform != 'linux'",
+    # x86_64: PyPI wheel; aarch64 Linux: prebuilt wheel in scripts/deployment/dgpu/wheels/
+    "torchcodec==0.4.0; platform_machine == 'x86_64'",
+    "torchcodec==0.10.0a0; platform_machine == 'aarch64' and sys_platform == 'linux'",
     "wandb==0.23.0",
     "pyzmq==27.0.1",
-    # deepspeed does not currently publish Linux aarch64 wheels.
+    # deepspeed has no aarch64 Linux wheel
     "deepspeed==0.17.6; platform_machine != 'aarch64' or sys_platform != 'linux'",
+    # triton is needed on aarch64 (GB200) but ships with torch on x86_64
+    "triton==3.3.1; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "flash-attn==2.7.4.post1",
+    "onnx>=1.20.0",
+    # cu12 wheels only exist for x86_64; Blackwell / aarch64 requires cu13.
+    "tensorrt-cu12>=10.15.1.29; platform_machine == 'x86_64'",
+    "tensorrt-cu13>=10.15.1.29; platform_machine == 'aarch64'",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "boto3",
     "ruff",
     "ipython",
     "pytest",
@@ -56,31 +62,41 @@ dev = [
     "build",
     "pre-commit",
 ]
-gpu = [
-    "flash-attn==2.7.4.post1",
-    "onnx>=1.20.0",
-    "tensorrt>=10.14.1.48.post1",
-]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gr00t*"]
 
-[tool.uv.extra-build-dependencies]
-flash-attn = ["torch==2.7.1", "numpy==1.26.4", "triton==3.3.1"]
+[tool.uv]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and (platform_machine == 'aarch64')" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
 ]
 torchvision = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and (platform_machine == 'aarch64')" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
 ]
 triton = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and (platform_machine == 'aarch64')" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+flash-attn = [
+    { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.7cxx11abiFALSE-cp310-cp310-linux_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.10'" },
+    { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.7cxx11abiFALSE-cp312-cp312-linux_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'" },
+    { path = "scripts/deployment/dgpu/wheels/flash_attn-2.7.4.post1-cp310-cp310-linux_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.10'" },
+]
+torchcodec = [
+    { path = "scripts/deployment/dgpu/wheels/torchcodec-0.10.0a0-cp310-cp310-linux_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
 ]
 
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch==2.7.1", "numpy==1.26.4", "triton==3.3.1"]
+
 [tool.pytest.ini_options]
+pythonpath = [".", "tests"]
 addopts = "--import-mode=importlib"
 markers = [
     "gpu: tests that require a GPU",
@@ -100,7 +116,6 @@ exclude = [
     "dist",
     "logs",
     "*.ipynb",
-    "gr00t/model/modules/nvidia/Eagle-Block2A-2B-v2",
     "external_dependencies",
 ]
 

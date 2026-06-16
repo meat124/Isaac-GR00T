@@ -104,7 +104,6 @@ __pypackages__/
 .cursor/
 .cursor*
 .claude/
-CLAUDE.md
 
 # Sphinx docs
 docs/_build/
@@ -159,7 +158,7 @@ third_parties/
 dump.rdb
 
 # Docker
-.dockerignore
+# Note: docker/.dockerignore is tracked — it controls the Docker build context
 
 # SysID / robotics experiment data
 sysid_data/

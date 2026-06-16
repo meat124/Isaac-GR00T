@@ -7,7 +7,7 @@ from pathlib import Path
 import tyro
 
 from gr00t.data.embodiment_tags import EmbodimentTag
-from gr00t.model.gr00t_n1d6.rtc_groot import GR00TRTCConfig
+from gr00t.model.gr00t_n1d7.rtc_groot import GR00TRTCConfig
 from gr00t.policy.gr00t_policy import Gr00tPolicy
 from gr00t.policy.server_client import PolicyServer
 
