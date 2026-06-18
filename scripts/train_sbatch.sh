@@ -34,6 +34,8 @@ set -euo pipefail
 GR00T_DIR=/lustre/meat124/Isaac-GR00T
 DATASET="${DATASET:-put_carrot_on_plate}"
 DATASET_PATH=/lustre/meat124/rby1_demo/${DATASET}
+# Modality config: rby1_config.py (3 cams) by default; pass rby1_head_config.py for head-only.
+MODALITY_CONFIG="${MODALITY_CONFIG:-examples/rby1/rby1_config.py}"
 
 # Output dir is derived from the SLURM job name.
 # wandb run name will also match since experiment.py uses basename(output_dir).
@@ -57,6 +59,7 @@ echo "=============================="
 echo "Job ID       : $SLURM_JOB_ID"
 echo "Job Name     : $SLURM_JOB_NAME"
 echo "Dataset      : $DATASET_PATH"
+echo "Modality cfg : $MODALITY_CONFIG"
 echo "Output Dir   : $OUTPUT_DIR"
 echo "Node         : $(hostname)"
 echo "Start        : $(date)"
@@ -74,7 +77,7 @@ uv run python gr00t/experiment/launch_finetune.py \
     --base-model-path nvidia/GR00T-N1.7-3B \
     --dataset-path "$DATASET_PATH" \
     --embodiment-tag NEW_EMBODIMENT \
-    --modality-config-path examples/rby1/rby1_config.py \
+    --modality-config-path "$MODALITY_CONFIG" \
     --num-gpus 1 \
     --output-dir "$OUTPUT_DIR" \
     --save-total-limit 5 \
