@@ -80,7 +80,8 @@ uv run python gr00t/experiment/launch_finetune.py \
     --modality-config-path "$MODALITY_CONFIG" \
     --num-gpus 1 \
     --output-dir "$OUTPUT_DIR" \
-    --save-total-limit 5 \
+    --save-total-limit 2 \
+    --save-only-model \
     --save-steps 2000 \
     --max-steps 20000 \
     --use-wandb \
