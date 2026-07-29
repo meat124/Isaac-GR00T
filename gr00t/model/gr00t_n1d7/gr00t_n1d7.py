@@ -487,6 +487,32 @@ class Gr00tN1d7ActionHead(nn.Module):
         return BatchFeature(data=batch)
 
 
+def inject_llm_lora(language_model: nn.Module, config: Gr00tN1d7Config) -> None:
+    """Wrap the LLM decoder projections named in ``config.lora_llm_target_modules``
+    with LoRA adapters (in place). Adapters come out trainable (+fp32 when
+    ``backbone_trainable_params_fp32``); the wrapped base weights keep whatever
+    values — and ``requires_grad`` — they had, so this composes with the
+    backbone's freeze flags. Call AFTER the base weights you want are loaded
+    (peft renames the wrapped projections to ``*.base_layer.weight``)."""
+    from peft import LoraConfig, inject_adapter_in_model
+
+    lora_config = LoraConfig(
+        r=config.lora_llm_rank,
+        lora_alpha=config.lora_llm_alpha,
+        lora_dropout=config.lora_llm_dropout,
+        target_modules=[
+            m.strip() for m in config.lora_llm_target_modules.split(",") if m.strip()
+        ],
+        bias="none",
+    )
+    inject_adapter_in_model(lora_config, language_model)
+    for name, param in language_model.named_parameters():
+        if "lora_" in name:
+            param.requires_grad = True
+            if config.backbone_trainable_params_fp32:
+                param.data = param.data.to(torch.float32)
+
+
 def get_backbone_cls(config: Gr00tN1d7Config):
     if "nvidia/Cosmos-Reason2" in config.model_name or "Qwen/Qwen3-VL" in config.model_name:
         # We import here as Qwen3Backbone depends on newer transformers versions than the rest of the code.
@@ -539,6 +565,17 @@ class Gr00tN1d7(PreTrainedModel):
             trainable_params_fp32=config.backbone_trainable_params_fp32,
             transformers_loading_kwargs=transformers_loading_kwargs,
         )
+
+        # LoRA on the kept LLM decoder layers (rank 0 = off). Injecting here, inside
+        # __init__, makes from_pretrained on a LoRA-TRAINED checkpoint rebuild the
+        # adapters from its saved config and load their (base_layer.*/lora_*.*)
+        # keys like any others. A PLAIN checkpoint must NOT take this path — peft
+        # renames the wrapped projections to *.base_layer.weight, so plain
+        # checkpoint keys would no longer match and the projections would keep the
+        # Cosmos init instead of the checkpoint weights. For that case the training
+        # pipeline injects AFTER weight loading (see setup.py _create_model).
+        if getattr(config, "lora_llm_rank", 0) > 0:
+            inject_llm_lora(self.backbone.model.language_model, config)
 
         # Initialize action head
         self.action_head = Gr00tN1d7ActionHead(config)

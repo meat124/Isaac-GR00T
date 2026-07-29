@@ -30,6 +30,11 @@ class DatasetFactory:
     Factory class for building training datasets. Model-agnostic.
     """
 
+    # Subclass hook: swap the per-dataset class (e.g. to inject extra per-step
+    # fields) without duplicating build(). ``None`` means the stock dataset, looked
+    # up on the module at call time so that patching the module symbol still works.
+    dataset_cls: type | None = None
+
     def __init__(self, config: Config):
         self.config = config
 
@@ -58,7 +63,7 @@ class DatasetFactory:
                     if is_rank0:
                         generate_stats(dataset_path)
                         generate_rel_stats(dataset_path, EmbodimentTag(embodiment_tag))
-                dataset = ShardedSingleStepDataset(
+                dataset = (self.dataset_cls or ShardedSingleStepDataset)(
                     dataset_path=dataset_path,
                     embodiment_tag=EmbodimentTag(embodiment_tag),
                     modality_configs=self.config.data.modality_configs[embodiment_tag],

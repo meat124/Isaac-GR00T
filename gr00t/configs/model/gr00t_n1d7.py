@@ -50,6 +50,14 @@ class Gr00tN1d7Config(PretrainedConfig):
     load_bf16: bool = False  # Enable BF16 loading
     backbone_trainable_params_fp32: bool = True
 
+    # LoRA on the (kept) LLM decoder layers. rank 0 = disabled (default). Adapters
+    # are injected in Gr00tN1d7.__init__, so a checkpoint saved with rank > 0
+    # rebuilds and reloads them through the ordinary from_pretrained path.
+    lora_llm_rank: int = 0
+    lora_llm_alpha: int = 32
+    lora_llm_dropout: float = 0.0
+    lora_llm_target_modules: str = "q_proj,k_proj,v_proj,o_proj"
+
     ### Processing parameters
     image_crop_size: tuple[int, int] | None = (230, 230)
     image_target_size: tuple[int, int] | None = (256, 256)

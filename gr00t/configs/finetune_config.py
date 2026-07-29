@@ -58,6 +58,19 @@ class FinetuneConfig:
     tune_diffusion_model: bool = True
     """If True, fine-tune the diffusion-based action decoder (if present in the model)."""
 
+    lora_llm_rank: int = 0
+    """LoRA rank for adapters on the (kept) LLM decoder layers. 0 disables LoRA.
+    Use with tune_llm=False: the base LLM stays frozen and only the adapters train."""
+
+    lora_llm_alpha: int = 32
+    """LoRA alpha (scaling) for the LLM adapters."""
+
+    lora_llm_dropout: float = 0.0
+    """LoRA dropout for the LLM adapters."""
+
+    lora_llm_target_modules: str = "q_proj,k_proj,v_proj,o_proj"
+    """Comma-separated module names the LLM adapters attach to."""
+
     state_dropout_prob: float = 0.2
     """
     Dropout probability applied to state inputs for regularization during training.

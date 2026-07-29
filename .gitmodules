@@ -10,3 +10,6 @@
 [submodule "external_dependencies/robocasa"]
 	path = external_dependencies/robocasa
 	url = https://github.com/squarefk/robocasa
+[submodule "external_dependencies/av-aloha"]
+	path = external_dependencies/av-aloha
+	url = https://github.com/Soltanilara/av-aloha.git

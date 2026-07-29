@@ -851,6 +851,11 @@ class Gr00tN1d7Processor(BaseProcessor):
                 "max_action_horizon",
                 "max_state_dim",
                 "max_action_dim",
+                # [latent-ntp fork] --extra-augmentation-config is plumbed all the
+                # way from FinetuneConfig but was silently dropped here (not in the
+                # whitelist -> the checkpoint's saved processor_kwargs won). The
+                # None-guard below keeps default (unset) runs byte-identical.
+                "extra_augmentation_config",
             ]
             for key in override_keys:
                 if key in kwargs:

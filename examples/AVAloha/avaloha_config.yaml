@@ -1,0 +1,58 @@
+# =============================================================================
+# AV-ALOHA -> GR00T N1.7 configuration (single source of truth)
+#
+# Used by:
+#   - avaloha_config.py            (reads `cameras`, `action_horizon`, `num_arms`)
+#   - convert_avaloha_to_gr00t.py  (reads `task`, `num_arms` for defaults)
+#   - train_avaloha.py             (reads training hyperparameters)
+# =============================================================================
+
+# --- Task / embodiment ---------------------------------------------------------
+# Task to train/deploy. One of:
+#   insert_peg, slot_insertion, sew_needle, tube_transfer, hook_package
+task: slot_insertion
+# 3 = bimanual + active-vision ZED arm (has zed_cam_*); 2 = bimanual only (no ZED).
+num_arms: 3
+
+# --- Action space --------------------------------------------------------------
+# 'eef'  : per-arm end-effector pose (xyz + rot6d, 9-D each) + grippers — task space.
+#          GR00T's native relative-EEF representation; deploy uses IK to drive the sim.
+# 'joint': raw joint targets (6/7-D per arm) + grippers — joint space.
+# Default: eef (task space). The dataset & checkpoint must use the SAME action_space.
+action_space: eef
+
+# --- Camera selection ----------------------------------------------------------
+# Which simulator views to feed GR00T. Pick any combination of:
+#   zed_cam_left, zed_cam_right      <- active-vision stereo pair on the middle arm (3-arm only)
+#   wrist_cam_left, wrist_cam_right
+#   overhead_cam, worms_eye_cam
+# Default: the LEFT active-vision ZED camera only.
+cameras:
+  - zed_cam_left
+  # - zed_cam_right
+  # - overhead_cam
+  # - wrist_cam_left
+  # - wrist_cam_right
+
+# --- Model / horizon -----------------------------------------------------------
+action_horizon: 16          # number of future action steps the model predicts
+
+# --- Training hyperparameters (consumed by train_avaloha.py) -------------------
+# max_steps: follows GR00T's benchmark convention (LIBERO/SimplerEnv use 20000) and
+# exceeds the AV-ALOHA ACT baseline's data exposure (15625 steps x batch 16 ~= 17.5
+# epochs on the 50-episode set); GR00T finetunes from a pretrained prior so this is
+# ample. learning_rate is GR00T's tuned finetune default (1e-4), not ACT's 2.5e-5.
+max_steps: 100000
+global_batch_size: 16
+learning_rate: 1.0e-4
+# Joint-space control needs proprioception (esp. the active-vision arm pose to
+# interpret the moving ZED image), so we keep state by default (no dropout).
+state_dropout_prob: 0.0
+dataloader_num_workers: 4
+save_steps: 10000   # ~10 checkpoints over the run; lets you pick the best later
+
+# --- Logging (Weights & Biases) ------------------------------------------------
+# Set use_wandb: true to log loss / learning-rate / grad-norm to W&B.
+# Run `wandb login` once beforehand. Logged under <wandb_project>.
+use_wandb: false
+wandb_project: avaloha-gr00t-n1d7

@@ -47,6 +47,8 @@ def convert_tensors_to_lists(obj):
 class Gr00tN1d7Pipeline(ModelPipeline):
     model_class = Gr00tN1d7
     processor_class = Gr00tN1d7Processor
+    # Subclass hook: swap the dataset factory (e.g. for per-step field injection).
+    dataset_factory_cls = DatasetFactory
 
     def __init__(self, config: Config, save_cfg_dir: Path):
         super().__init__(config)
@@ -89,6 +91,12 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 state_dropout_prob=self.config.model.state_dropout_prob,
                 backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
                 load_bf16=self.config.model.load_bf16,
+                # NOTE: the lora_llm_* overrides are deliberately NOT passed here.
+                # Injection must happen AFTER the checkpoint weights are loaded —
+                # peft renames the wrapped projections to *.base_layer.weight, so
+                # injecting during __init__ would leave a PLAIN checkpoint's
+                # projection weights unmatched (silently keeping the Cosmos init).
+                # See the guarded inject_llm_lora call below.
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,
@@ -117,6 +125,32 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 raise RuntimeError(
                     "Checkpoint weight mismatch for "
                     f"{self.config.training.start_from_checkpoint}:\n" + "\n".join(errors)
+                )
+
+            # LoRA on the LLM (lora_llm_rank > 0), injected AFTER the clean weight
+            # load so the wrapped projections' base_layer keeps the CHECKPOINT
+            # weights. Guarded: a LoRA-trained start checkpoint already injected in
+            # __init__ (its config carries lora_llm_rank > 0) — don't double-wrap.
+            if (
+                self.config.model.lora_llm_rank > 0
+                and getattr(model.config, "lora_llm_rank", 0) == 0
+            ):
+                from gr00t.model.gr00t_n1d7.gr00t_n1d7 import inject_llm_lora
+
+                model.config.lora_llm_rank = self.config.model.lora_llm_rank
+                model.config.lora_llm_alpha = self.config.model.lora_llm_alpha
+                model.config.lora_llm_dropout = self.config.model.lora_llm_dropout
+                model.config.lora_llm_target_modules = (
+                    self.config.model.lora_llm_target_modules
+                )
+                inject_llm_lora(model.backbone.model.language_model, model.config)
+                n_lora = sum(
+                    p.numel() for n, p in model.named_parameters() if "lora_" in n
+                )
+                logging.info(
+                    "Injected LLM LoRA post-load: rank=%d, %d adapter params",
+                    model.config.lora_llm_rank,
+                    n_lora,
                 )
 
         else:
@@ -221,7 +255,7 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     json.dump({k: str(v) for k, v in vars(processor).items()}, f, indent=2)
 
         self.processor = processor
-        dataset_factory = DatasetFactory(config=self.config)
+        dataset_factory = self.dataset_factory_cls(config=self.config)
         train_dataset, eval_dataset = dataset_factory.build(processor=self.processor)
 
         with run_or_wait_on_rank0(label="dataset_statistics.json write") as is_rank0:

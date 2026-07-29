@@ -24,7 +24,7 @@ import warnings
 from omegaconf import OmegaConf
 import torch
 import torch.distributed as dist
-from transformers import TrainingArguments, set_seed
+from transformers import TrainerCallback, TrainingArguments, set_seed
 import wandb
 
 from gr00t.configs.base_config import Config
@@ -36,6 +36,32 @@ from gr00t.experiment.trainer import Gr00tTrainer, ProfCallback
 from gr00t.experiment.utils import BestMetricCheckpointCallback, CheckpointFormatCallback
 from gr00t.model import MODEL_REGISTRY
 from gr00t.utils.initial_actions import INITIAL_ACTIONS_FILENAME, save_initial_actions
+
+
+# [latent-ntp fork] Stage-sectioned wandb logging, enabled by the WANDB_SECTION
+# env var (e.g. "stage_c"). HF's stock WandbCallback logs flat keys
+# ("learning_rate", ...) WITHOUT an explicit step= — wandb then uses its own
+# log-call counter as the x-axis, which disagrees with the custom stage A/B
+# loops (they log "<section>_train/<metric>" at the real training step). This
+# callback replaces it: same key layout ("stage_c_train/loss", ".../lr",
+# ".../grad_norm"), x-axis = global_step. Behaviour is unchanged when
+# WANDB_SECTION is unset.
+class SectionedWandbCallback(TrainerCallback):
+    _RENAMES = {"learning_rate": "lr"}
+
+    def __init__(self, section: str):
+        self.section = section
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not state.is_world_process_zero or not logs or wandb.run is None:
+            return
+        payload = {
+            f"{self.section}_train/{self._RENAMES.get(k, k)}": v
+            for k, v in logs.items()
+            if isinstance(v, (int, float))
+        }
+        if payload:
+            wandb.run.log(payload, step=state.global_step)
 
 
 def setup_logging(debug: bool = False):
@@ -217,11 +243,19 @@ def run(config: Config):
                     "git_commit_hash": os.environ.get("GROOT_COMMIT_HASH", "unknown"),
                 }
 
+                # [latent-head fork] WANDB_NAME/WANDB_TAGS env fallbacks: experiment_name
+                # doubles as the output subdir, so the launcher can't prefix it with the
+                # stage ("c-...") — the sbatch exports the display name/tag instead.
+                # Behaviour is unchanged when the env vars are unset.
                 wandb.init(
                     project=config.training.wandb_project,
-                    name=experiment_name,
+                    name=os.environ.get("WANDB_NAME") or experiment_name,
                     config=config_dict,
-                    tags=[config.data.mode],
+                    tags=(
+                        os.environ["WANDB_TAGS"].split(",")
+                        if os.environ.get("WANDB_TAGS")
+                        else [config.data.mode]
+                    ),
                 )
 
     # Setup model training pipeline.
@@ -258,6 +292,10 @@ def run(config: Config):
         lr_scheduler_type=config.training.lr_scheduler_type,
         weight_decay=config.training.weight_decay,
         warmup_ratio=config.training.warmup_ratio,
+        # warn_configs promises warmup_steps > 0 overrides warmup_ratio; HF's
+        # TrainingArguments implements exactly that precedence — but only if the
+        # value is actually passed (it previously wasn't, silently discarding it).
+        warmup_steps=config.training.warmup_steps,
         max_grad_norm=config.training.max_grad_norm,
         logging_steps=config.training.logging_steps,
         save_steps=config.training.save_steps,
@@ -269,7 +307,13 @@ def run(config: Config):
         gradient_checkpointing=config.training.gradient_checkpointing,
         optim=config.training.optim,
         dataloader_num_workers=config.training.dataloader_num_workers,
-        report_to="wandb" if config.training.use_wandb else "none",
+        # WANDB_SECTION set -> our SectionedWandbCallback logs instead of HF's
+        # stock WandbCallback (flat keys, no explicit step); see class docstring.
+        report_to=(
+            "wandb"
+            if config.training.use_wandb and not os.environ.get("WANDB_SECTION")
+            else "none"
+        ),
         seed=config.data.seed,
         deepspeed=deepspeed_config,
         ddp_find_unused_parameters=False,
@@ -298,6 +342,9 @@ def run(config: Config):
             processor_dir=processor_dir,
         )
     )
+
+    if config.training.use_wandb and os.environ.get("WANDB_SECTION"):
+        trainer.add_callback(SectionedWandbCallback(os.environ["WANDB_SECTION"]))
 
     if config.training.save_best_eval_metric_name != "":
         trainer.add_callback(
