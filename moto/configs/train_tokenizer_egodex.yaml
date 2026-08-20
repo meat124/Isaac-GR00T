@@ -1,0 +1,35 @@
+defaults:
+  - data: egodex_tokenizer
+  - model: vq_size128_dim32_num8_legacyTrue-vision_MaeLarge-decoder_queryFusionModeAdd_Patch196_useMaskFalse-mformer_legacyTrue
+  - _self_
+
+load_pretrained: false
+load_using_pretrained: true
+pretrained_path: ""
+pretrained_state_dict_key: null
+
+output_dir: ${oc.env:LARA_TOKENIZER_OUTPUT_DIR,./outputs/lam_egodex}
+run_name: lara-lam-egodex
+batch_size: 128
+gradient_accumulation_steps: 2
+max_steps: 100000
+save_steps: 5000
+save_total_limit: 4
+logging_steps: 50
+learning_rate: 1e-4
+weight_decay: 1e-4
+warmup_ratio: 0.003
+# The per-frame step index costs ~7.7 GB and every worker forks a copy-on-write
+# view of it, so stay near the partition's CPUs-per-GPU rather than maxing out.
+dataloader_num_workers: 8
+report_to: tensorboard
+resume: false
+seed: 42
+
+num_gpus: ${oc.decode:${oc.env:LARA_NUM_GPUS,1}}
+balance_dataset_weights: false
+balance_trajectory_weights: true
+
+hydra:
+  run:
+    dir: ${output_dir}/hydra

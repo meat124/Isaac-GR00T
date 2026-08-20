@@ -73,7 +73,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["gr00t*"]
+# moto is the vendored latent-motion tokenizer from the LARA release; it is imported
+# only when LARA alignment is enabled, but it has to be installed to be importable.
+include = ["gr00t*", "moto*"]
 
 [tool.uv]
 required-environments = [

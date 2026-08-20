@@ -1,0 +1,51 @@
+# MFLA-style masked head/hand factorization of the EgoDex tokenizer.
+# IDENTICAL to train_tokenizer_egodex (the lam_egodex 100k run) except:
+#   - model.config.factorized_masked: queries split 4 head(bg) + 4 hand, one VQ codebook
+#     per stream (same 128x32 beta 0.25 each), three decodes with region-masked stream
+#     losses next to the unchanged full recon+LPIPS objective (MFLA model.py weights 1.0);
+#   - hand_mask_root: CaRe-Ego hand+held-object masks (user-confirmed scope, 2026-08-07),
+#     full-corpus coverage, joined via the dataset sidecar;
+#   - report_to: wandb (offline; sync after the run).
+defaults:
+  - data: egodex_tokenizer
+  - model: vq_size128_dim32_num8_legacyTrue-vision_MaeLarge-decoder_queryFusionModeAdd_Patch196_useMaskFalse-mformer_legacyTrue
+  - _self_
+
+load_pretrained: false
+load_using_pretrained: true
+pretrained_path: ""
+pretrained_state_dict_key: null
+
+output_dir: ${oc.env:LARA_TOKENIZER_OUTPUT_DIR,./outputs/lam_egodex_masked}
+run_name: lara-lam-egodex-masked
+
+model:
+  config:
+    factorized_masked: true
+    query_num_head: 4
+    stream_recon_loss_w: 1.0
+
+hand_mask_root: /scratch2/meat124/egodex_masks/carego_hoi_256
+hand_mask_target_offset: 15
+
+batch_size: 128
+gradient_accumulation_steps: 2
+max_steps: 100000
+save_steps: 5000
+save_total_limit: 4
+logging_steps: 50
+learning_rate: 1e-4
+weight_decay: 1e-4
+warmup_ratio: 0.003
+dataloader_num_workers: 8
+report_to: wandb
+resume: false
+seed: 42
+
+num_gpus: ${oc.decode:${oc.env:LARA_NUM_GPUS,1}}
+balance_dataset_weights: false
+balance_trajectory_weights: true
+
+hydra:
+  run:
+    dir: ${output_dir}/hydra

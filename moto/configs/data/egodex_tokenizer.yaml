@@ -1,0 +1,11 @@
+data_1:
+  data_config:
+    _target_: moto.experiment.data_config.MotoTokenizerDataConfig
+    _recursive_: true
+
+    dataset_path: "/lustre/meat124/egodex_lerobot"
+    video_keys: ["video.ego_view"]
+    observation_indices: [0, 15]
+    action_indices: [15]
+    embodiment_tag: "egodex"
+    video_backend: "torchvision_av"
