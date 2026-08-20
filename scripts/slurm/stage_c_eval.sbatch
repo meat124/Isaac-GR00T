@@ -15,20 +15,23 @@
 # NO scheduling micromanagement (2026-07-05, user policy): no --exclude, no
 # --cpus-per-task/--mem — partition JobDefaults handle placement.
 #SBATCH --job-name=stageC_eval
-# Eval is CPU/sim-bound (~45-50 min/100ep on pro6000; render ~3 s/ep) and the bf16 3B
-# policy at batch=1 needs ~8-10 GB — RTX 3090/4090 (24 GB) fit with headroom and their
-# DefCpuPerGPU (16-20 vs pro6000's 6) helps the IK/sim bottleneck. Moving evals here
-# keeps the 4-GPU pro6000 pool free for training (2026-07-10).
-#SBATCH --partition=base_suma_rtx3090,suma_rtx4090,dell_rtx3090
-#SBATCH --qos=base_qos
+# Eval is CPU/sim-bound (~50 min/100ep) and the bf16 3B policy at batch=1 needs ~8-10 GB,
+# so RTX 3090 (24 GB) fits with headroom and its DefCpuPerGPU (16-20 vs pro6000's 6) helps
+# the IK/sim bottleneck. Keeping evals here leaves the pro6000 pool free for training.
+#
+# RTX3090 ONLY. Success rate is measured through an EGL-rendered observation, so the GPU
+# model is part of the measurement: every eval behind the 41.0% anchor landed on an
+# RTX3090. big_qos is required because big_suma_rtx3090 does not accept base_qos.
+#SBATCH --partition=base_suma_rtx3090,big_suma_rtx3090,dell_rtx3090
+#SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
 #SBATCH --time=08:00:00
-#SBATCH --output=/lustre/meat124/groot_runs/slurm/stageCeval_%j_%x.out
-#SBATCH --error=/lustre/meat124/groot_runs/slurm/stageCeval_%j_%x.err
+#SBATCH --output=/lustre/meat124/lara_ws/slurm_logs/stageCeval_%j_%x.out
+#SBATCH --error=/lustre/meat124/lara_ws/slurm_logs/stageCeval_%j_%x.err
 
 set -uo pipefail
-REPO=/lustre/meat124/Isaac-GR00T-latent-head
-VENV=/scratch2/meat124/.venvs/groot-latent-head
+REPO=/lustre/meat124/lara_ws/Isaac-GR00T
+VENV=/scratch2/meat124/.venvs/lara-ws
 TASK="${STAGE_C_TASK:-slot_insertion}"
 EVAL_OUT="${STAGE_C_EVAL_OUT:?set STAGE_C_EVAL_OUT}"
 EPISODES="${STAGE_C_EPISODES:-100}"
