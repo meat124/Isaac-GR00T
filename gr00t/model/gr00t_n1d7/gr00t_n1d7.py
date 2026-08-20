@@ -25,6 +25,13 @@ from transformers.feature_extraction_utils import BatchFeature
 import tree
 
 from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
+from gr00t.model.gr00t_n1d7.lara_align import (
+    build_latent_motion_head,
+    latent_alignment_loss,
+    latent_motion_head_width,
+    latent_stats,
+    pool_dit_tokens,
+)
 from gr00t.model.modules.dit import AlternateVLDiT, DiT, SelfAttentionTransformer
 from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
@@ -114,6 +121,22 @@ class Gr00tN1d7ActionHead(nn.Module):
             torch.tensor(float(config.noise_beta_beta), dtype=torch.float32, device="cpu"),
         )
         self.num_timestep_buckets = config.num_timestep_buckets
+
+        # LARA: the projector is built here so from_pretrained reloads it, but the
+        # tokenizer is not — it is attached post-load by configure_lara. An aligned
+        # checkpoint therefore deploys as a plain N1.7 (its tokenizer weights are
+        # unexpected keys the policy loader ignores) and inference never runs the LAM.
+        self.latent_motion_tokenizer = None
+        self.pred_latent_motion_head = None
+        # The trainer raises this on logging steps only: the latent diagnostics run an SVD.
+        self.lara_log_stats = False
+        if getattr(config, "use_lara", False):
+            self.pred_latent_motion_head = build_latent_motion_head(
+                self.input_embedding_dim,
+                config.lara_token_count * config.lara_codebook_dim,
+                config.lara_proj_layers,
+            )
+
         self.set_trainable_parameters(
             config.tune_projector, config.tune_diffusion_model, config.tune_vlln
         )
@@ -148,6 +171,47 @@ class Gr00tN1d7ActionHead(nn.Module):
         if not any(p.requires_grad for p in self.parameters()):
             logger.warning("No action head trainable parameters found.")
 
+    def configure_lara(self, config: Gr00tN1d7Config) -> None:
+        """Attach the latent-motion tokenizer that supplies the alignment target.
+
+        Called after the checkpoint weights are loaded, for the same reason LoRA is: the
+        base checkpoint has no tokenizer weights, and a strict load would reject them.
+        Registering it as a submodule is what puts it under the optimizer in the
+        co-trained arm.
+        """
+        from gr00t.model.gr00t_n1d7.moto_lam import MotoLam
+
+        lam = MotoLam(config.lara_tokenizer_path, config.lara_image_encoder_path or None)
+        lam.requires_grad_(config.lara_tune_tokenizer)
+        # The ViT-MAE front-end and LPIPS stay frozen even when the tokenizer trains.
+        lam.tokenizer.image_encoder.requires_grad_(False)
+        lam.tokenizer.loss_fn_lpips.requires_grad_(False)
+        if not config.lara_tune_tokenizer:
+            lam.eval()
+        self.latent_motion_tokenizer = lam
+
+        for key in ("token_count", "codebook_dim"):
+            setattr(self.config, f"lara_{key}", getattr(lam.config, key))
+        out_dim = lam.config.align_dim
+        head = self.pred_latent_motion_head
+        if head is None or latent_motion_head_width(head) != out_dim:
+            ref = next(self.action_decoder.parameters())
+            self.pred_latent_motion_head = build_latent_motion_head(
+                self.input_embedding_dim, out_dim, config.lara_proj_layers
+            ).to(device=ref.device, dtype=ref.dtype)
+        logger.info(
+            "LARA alignment on: target %d-D (%dx%d), DiT layer %d, pool=%s, "
+            "w_align=%.4g w_vae=%.4g, tokenizer %s",
+            out_dim,
+            lam.config.token_count,
+            lam.config.codebook_dim,
+            config.lara_hidden_layer,
+            config.lara_pool,
+            config.lara_align_weight,
+            config.lara_vae_weight,
+            "co-trained" if config.lara_tune_tokenizer else "frozen",
+        )
+
     def set_frozen_modules_to_eval_mode(self):
         """
         Huggingface will call model.train() at each training_step. To ensure
@@ -166,6 +230,8 @@ class Gr00tN1d7ActionHead(nn.Module):
             if not self.tune_vlln:
                 self.vlln.eval()
                 self.vl_self_attention.eval()
+            if self.latent_motion_tokenizer is not None and not self.config.lara_tune_tokenizer:
+                self.latent_motion_tokenizer.eval()
 
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
@@ -251,7 +317,7 @@ class Gr00tN1d7ActionHead(nn.Module):
         if self.config.use_alternate_vl_dit:
             image_mask = backbone_output.image_mask
             backbone_attention_mask = backbone_output.backbone_attention_mask
-            model_output, _ = self.model(
+            model_output, all_hidden_states = self.model(
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
@@ -261,7 +327,7 @@ class Gr00tN1d7ActionHead(nn.Module):
                 backbone_attention_mask=backbone_attention_mask,
             )
         else:
-            model_output, _ = self.model(
+            model_output, all_hidden_states = self.model(
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
@@ -277,13 +343,67 @@ class Gr00tN1d7ActionHead(nn.Module):
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 
-        return {
+        outputs = {
             "loss": loss,
             "action_loss": action_loss,
             "action_mask": action_mask,
             "backbone_features": vl_embeds,
             "state_features": state_features,
         }
+        if self.latent_motion_tokenizer is not None and "lam_frame_t" in action_input:
+            lara = self._lara_alignment(action_input, all_hidden_states, action_mask)
+            outputs["loss"] = loss + lara.pop("lara_loss")
+            outputs.update(lara)
+        return outputs
+
+    def _lara_alignment(
+        self, action_input: BatchFeature, all_hidden_states: list, action_mask: torch.Tensor
+    ) -> dict:
+        """LARA Eq. 6/7: align a DiT token to the tokenizer's latent motion embedding.
+
+        ``all_hidden_states`` is ``[input] + one entry per DiT block``, so the configured
+        index selects a block output. Rows whose partner frame fell past the episode end
+        are dropped from both terms; the tokenizer still runs on the full batch so its
+        cost and its behaviour under DDP do not depend on the batch's contents.
+        """
+        cfg = self.config
+        z, vae_loss = self.latent_motion_tokenizer.encode_and_lam_loss(
+            action_input["lam_frame_t"], action_input["lam_frame_th"]
+        )
+        # The processor pads every chunk to the model's action_horizon, so the token of
+        # the final DATASET step is not the final action token. action_mask marks the
+        # real steps.
+        chunk_len = action_mask.any(dim=-1).sum(dim=-1)
+        hidden = pool_dit_tokens(
+            all_hidden_states[cfg.lara_hidden_layer], self.action_horizon, cfg.lara_pool, chunk_len
+        )
+        pred = self.pred_latent_motion_head(hidden)
+
+        # Only the alignment is masked. A clamped pair still reconstructs a real frame, so
+        # the tokenizer's own loss is well posed on it; the LATENT is what no longer
+        # describes the action chunk.
+        valid = action_input["lam_valid"].to(pred.device).reshape(-1) > 0.5
+        if valid.any():
+            align_loss, stats = latent_alignment_loss(
+                pred[valid],
+                z[valid],
+                center=cfg.lara_align_center,
+                w_var=cfg.lara_w_var,
+                var_floor=cfg.lara_var_floor,
+                w_cov=cfg.lara_w_cov,
+            )
+        else:
+            align_loss = pred.sum() * 0.0
+            stats = {}
+        out = {
+            "lara_loss": cfg.lara_align_weight * align_loss + cfg.lara_vae_weight * vae_loss,
+            "lara_align_loss": align_loss.detach(),
+            "lara_vae_loss": vae_loss.detach(),
+            **{k: v.detach() for k, v in stats.items()},
+        }
+        if self.lara_log_stats and valid.any():
+            out.update(latent_stats(z[valid], "lara_z"))
+        return out
 
     def _encode_features(
         self, backbone_output: BatchFeature, action_input: BatchFeature

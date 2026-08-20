@@ -58,6 +58,34 @@ class Gr00tN1d7Config(PretrainedConfig):
     lora_llm_dropout: float = 0.0
     lora_llm_target_modules: str = "q_proj,k_proj,v_proj,o_proj"
 
+    # LARA representation alignment (arXiv:2606.07100). use_lara = False (default) leaves
+    # the action head byte-identical to stock. The tokenizer is attached after the
+    # checkpoint load (setup.py), so only the projector is rebuilt by from_pretrained —
+    # which is why an aligned checkpoint still deploys through the ordinary policy path.
+    use_lara: bool = False
+    lara_tokenizer_path: str = ""
+    lara_image_encoder_path: str = ""
+    lara_tune_tokenizer: bool = True
+    # Index into the DiT's all_hidden_states list ([input] + one per block), so -3 is the
+    # second-to-last block's output — the paper's L-2.
+    lara_hidden_layer: int = -3
+    lara_align_weight: float = 0.01
+    lara_vae_weight: float = 0.01
+    lara_lam_horizon: int = 15
+    lara_video_key: str = "zed_cam_left"
+    lara_pool: str = "last"
+    lara_proj_layers: int = 0
+    # Target width = token_count * codebook_dim. Both are properties of the tokenizer
+    # checkpoint; configure_lara overwrites them from the loaded one, so a saved config
+    # rebuilds a projector of the right shape.
+    lara_token_count: int = 8
+    lara_codebook_dim: int = 32
+    # Anti-collapse guards, all off by default = the released objective.
+    lara_align_center: bool = False
+    lara_w_var: float = 0.0
+    lara_var_floor: float = 0.4
+    lara_w_cov: float = 0.0
+
     ### Processing parameters
     image_crop_size: tuple[int, int] | None = (230, 230)
     image_target_size: tuple[int, int] | None = (256, 256)

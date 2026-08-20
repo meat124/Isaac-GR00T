@@ -38,6 +38,7 @@ from typing import Any, Optional
 import torch
 from transformers.trainer import TRAINER_STATE_NAME, Trainer, TrainerState, get_last_checkpoint
 from transformers.trainer_callback import TrainerCallback
+from transformers.modeling_utils import unwrap_model
 
 
 class ProfCallback(TrainerCallback):
@@ -266,6 +267,12 @@ class Gr00tTrainer(Trainer):
         *and* model outputs, we calculate accuracy and push it to the logger.
         """
 
+        # The LARA latent diagnostics run an SVD, so they are gated to logging steps.
+        is_logging_step = self.state.global_step % self.args.logging_steps == 0
+        action_head = getattr(unwrap_model(model), "action_head", None)
+        if action_head is not None and hasattr(action_head, "lara_log_stats"):
+            action_head.lara_log_stats = is_logging_step
+
         # Use parent implementation to preserve built-in functionality.
         loss, outputs = super().compute_loss(
             model,
@@ -273,6 +280,21 @@ class Gr00tTrainer(Trainer):
             return_outputs=True,
             num_items_in_batch=num_items_in_batch,
         )
+
+        # Alignment components. latent_align_centered near 0 while the raw cosine is near
+        # 0 means the projector is matching the target's batch mean and transferring no
+        # per-sample information — the degenerate optimum the guards exist to block. Read
+        # it together with lara_z_eff_rank: centred cosine on a rank-1 target is
+        # meaningless.
+        if is_logging_step and model.training and "lara_align_loss" in outputs:
+            if self.args.local_rank in (-1, 0):
+                self.log(
+                    {
+                        f"lara/{k}": float(v)
+                        for k, v in outputs.items()
+                        if k.startswith(("lara_", "latent_")) and v.numel() == 1
+                    }
+                )
         # import ipdb; ipdb.set_trace()
         # # save the model's embedding for the first step
         # input_embeddings = model.get_input_embeddings().weight.data.cpu()

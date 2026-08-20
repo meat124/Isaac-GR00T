@@ -111,7 +111,14 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     )
                 logging.info("mask_token not in checkpoint - initialized")
 
-            unexpected_keys = loading_info.get("unexpected_keys", [])
+            # An aligned checkpoint carries the latent-motion tokenizer, which
+            # configure_lara attaches only after this load — so its keys are expected to
+            # be absent from the freshly built model.
+            unexpected_keys = [
+                k
+                for k in loading_info.get("unexpected_keys", [])
+                if "latent_motion_tokenizer" not in k
+            ]
             mismatched_keys = loading_info.get("mismatched_keys", [])
             other_missing = [k for k in missing_keys if "mask_token" not in k]
             errors = []
@@ -152,6 +159,29 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     model.config.lora_llm_rank,
                     n_lora,
                 )
+
+            # LARA alignment, attached after the load for the same reason as LoRA: the
+            # base checkpoint has no tokenizer weights and the load above is strict.
+            if self.config.model.use_lara:
+                for field in (
+                    "use_lara",
+                    "lara_tokenizer_path",
+                    "lara_image_encoder_path",
+                    "lara_tune_tokenizer",
+                    "lara_hidden_layer",
+                    "lara_align_weight",
+                    "lara_vae_weight",
+                    "lara_lam_horizon",
+                    "lara_video_key",
+                    "lara_pool",
+                    "lara_proj_layers",
+                    "lara_align_center",
+                    "lara_w_var",
+                    "lara_var_floor",
+                    "lara_w_cov",
+                ):
+                    setattr(model.config, field, getattr(self.config.model, field))
+                model.action_head.configure_lara(model.config)
 
         else:
             model = self.model_class(
@@ -256,6 +286,20 @@ class Gr00tN1d7Pipeline(ModelPipeline):
 
         self.processor = processor
         dataset_factory = self.dataset_factory_cls(config=self.config)
+        if self.config.model.use_lara:
+            # The alignment target needs (frame[t], frame[t+H]). Asking the data pipeline
+            # for a second video observation index would also hand the VLM that frame and
+            # move the policy off the baseline's input distribution, so the pair rides
+            # along as extra keys instead.
+            from functools import partial
+
+            from gr00t.data.dataset.lara_frame_dataset import LaraFrameDataset
+
+            dataset_factory.dataset_cls = partial(
+                LaraFrameDataset,
+                lam_horizon=self.config.model.lara_lam_horizon,
+                video_key=self.config.model.lara_video_key,
+            )
         train_dataset, eval_dataset = dataset_factory.build(processor=self.processor)
 
         with run_or_wait_on_rank0(label="dataset_statistics.json write") as is_rank0:

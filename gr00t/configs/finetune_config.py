@@ -71,6 +71,54 @@ class FinetuneConfig:
     lora_llm_target_modules: str = "q_proj,k_proj,v_proj,o_proj"
     """Comma-separated module names the LLM adapters attach to."""
 
+    # --- LARA representation alignment (arXiv:2606.07100) ---
+    use_lara: bool = False
+    """If True, align a DiT hidden token to the latent-motion tokenizer's embedding.
+    Adds two auxiliary loss terms; the action prediction path is unchanged."""
+
+    lara_tokenizer_path: str = ""
+    """Path to the trained moto LatentMotionTokenizer checkpoint. Required with use_lara."""
+
+    lara_image_encoder_path: str = ""
+    """Path to the tokenizer's frozen ViT-MAE encoder. Empty = whatever its config names."""
+
+    lara_tune_tokenizer: bool = True
+    """If True, co-train the tokenizer (paper Eq. 7). False freezes it (Eq. 6)."""
+
+    lara_hidden_layer: int = -3
+    """Index into the DiT's all_hidden_states list; -3 is the paper's L-2 block output."""
+
+    lara_align_weight: float = 0.01
+    """Weight on the cosine alignment term (paper Appendix B.2 optimum)."""
+
+    lara_vae_weight: float = 0.01
+    """Weight on the tokenizer's own reconstruction loss (co-trained arm only)."""
+
+    lara_lam_horizon: int = 15
+    """Frame-pair offset H: the tokenizer encodes the motion from frame t to frame t+H."""
+
+    lara_video_key: str = "zed_cam_left"
+    """Modality video key the frame pair is read from."""
+
+    lara_pool: str = "last"
+    """Which DiT token to align: last (final valid action step), action (their mean),
+    state, or all."""
+
+    lara_proj_layers: int = 0
+    """Hidden layers in the projector. 0 = the paper's single Linear."""
+
+    lara_align_center: bool = False
+    """Anti-collapse guard: subtract the batch mean before the cosine."""
+
+    lara_w_var: float = 0.0
+    """Anti-collapse guard: weight on the per-dim variance hinge."""
+
+    lara_var_floor: float = 0.4
+    """Per-dim batch std the variance hinge pulls toward. Set from the measured healthy std."""
+
+    lara_w_cov: float = 0.0
+    """Anti-collapse guard: weight on the off-diagonal correlation penalty."""
+
     state_dropout_prob: float = 0.2
     """
     Dropout probability applied to state inputs for regularization during training.
