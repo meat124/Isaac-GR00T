@@ -53,6 +53,13 @@ export VIRTUAL_ENV="$VENV"
 "$UV" pip install --python "$VENV/bin/python" \
   peft==0.17.1 transformers==4.57.3 lpips hydra-core==1.3.2 omegaconf==2.3.0
 
+# mujoco and dm-control are pinned to the anchor's versions, not left to resolve. Success
+# rate is measured by stepping this simulator, so its version is part of the measurement --
+# and deploy_avaloha's marker-collision handling was written against MuJoCo 3.10, where
+# gap=100 markers turned solid and physically blocked the insertions.
+"$UV" pip install --python "$VENV/bin/python" --index-strategy unsafe-best-match \
+  mujoco==3.10.0 dm-control==1.0.43 accelerate==1.13.0
+
 echo "=== import check ==="
 "$VENV/bin/python" - <<'PY'
 import gr00t, gym_guided_vision, flash_attn, peft, lpips, transformers, torch
