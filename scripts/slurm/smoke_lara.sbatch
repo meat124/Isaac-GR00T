@@ -51,7 +51,7 @@ echo "=== 2/3 aligned, 30 steps (paper settings, guards off) ==="
 "$VENV/bin/python" examples/AVAloha/train_avaloha.py \
   --dataset-path "$DATASET" --base-model-path nvidia/GR00T-N1.7-3B --output-dir "$OUT" \
   --global-batch-size 32 --max-steps 30 --learning-rate 1.4e-4 --save-steps 30 --gpus 0 \
-  -- --experiment-name smoke_lara --lora-llm-rank 16 --logging-steps 5 \
+  -- --experiment-name smoke_lara --lora-llm-rank 16 \
   --use-lara --lara-tokenizer-path "$LAM" --lara-image-encoder-path "$VITMAE"
 rc_lara=$?
 echo "[smoke] aligned rc=$rc_lara"
@@ -63,7 +63,7 @@ import sys
 from gr00t.policy.gr00t_policy import Gr00tPolicy
 
 path = sys.argv[1]
-policy = Gr00tPolicy(model_path=path, embodiment_tag="new_embodiment")
+policy = Gr00tPolicy(embodiment_tag="NEW_EMBODIMENT", model_path=path, device="cuda")
 head = policy.model.action_head
 print("loaded  :", path)
 print("use_lara:", getattr(policy.model.config, "use_lara", None))

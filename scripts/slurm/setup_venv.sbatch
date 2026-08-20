@@ -27,7 +27,7 @@ export PIP_CACHE_DIR=/scratch2/meat124/.cache/pip
 echo "[$(date)] node=$(hostname) building $VENV"
 cd "$REPO"
 
-"$UV" venv "$VENV" --python 3.10
+"$UV" venv "$VENV" --python 3.10 --clear
 export VIRTUAL_ENV="$VENV"
 
 "$UV" pip install --python "$VENV/bin/python" \
@@ -37,7 +37,11 @@ export VIRTUAL_ENV="$VENV"
 "$UV" pip install --python "$VENV/bin/python" --no-build-isolation \
   "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.7cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
 
+# unsafe-best-match: the extra indexes carry their own (older) copies of ordinary PyPI
+# packages -- requests 2.28.1 sits on the torch index and uv's default first-index-wins
+# rule pins to it, which makes gr00t's own datasets/wandb requirements unsatisfiable.
 "$UV" pip install --python "$VENV/bin/python" -e . \
+  --index-strategy unsafe-best-match \
   --extra-index-url https://pypi.nvidia.com \
   --extra-index-url https://download.pytorch.org/whl/cu128
 
