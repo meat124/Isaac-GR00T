@@ -22,7 +22,7 @@ from gr00t.data.dataset.sharded_single_step_dataset import ShardedSingleStepData
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.data.interfaces import BaseProcessor
 from gr00t.data.stats import generate_rel_stats, generate_stats
-from gr00t.experiment.dist_utils import run_or_wait_on_rank0
+from gr00t.utils.dist_utils import run_or_wait_on_rank0
 
 
 class DatasetFactory:
@@ -79,6 +79,15 @@ class DatasetFactory:
                 weight = relative_length * dataset_spec.mix_ratio
                 all_datasets.append(dataset)
                 all_weights.append(weight)
+
+        alpha = self.config.data.ds_weights_alpha
+        if alpha is not None and len(all_datasets) > 1:
+            ds_lengths = np.array([len(dataset) for dataset in all_datasets], dtype=np.float64)
+            all_weights = (np.power(ds_lengths, alpha) / np.power(ds_lengths[0], alpha)).tolist()
+            print(
+                f"Applied ds_weights_alpha={alpha} across {len(all_datasets)} datasets; "
+                "this overrides per-dataset mix_ratio sampling weights."
+            )
 
         return (
             ShardedMixtureDataset(

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CPU-only regression tests for `gr00t.experiment.dist_utils.run_or_wait_on_rank0`.
+"""CPU-only regression tests for `gr00t.utils.dist_utils.run_or_wait_on_rank0`.
 
 These pin the behavioural contract that motivates the helper:
 
@@ -54,6 +54,10 @@ WORKER_TIMEOUT_S = 120
 
 
 def _setup_pg(rank: int, world_size: int, init_file: str) -> None:
+    # One intra-op thread per child: WORLD_SIZE gloo workers each defaulting to
+    # a full-core pool oversubscribes an xdist-saturated CI box (the 120s-timeout
+    # flake). OMP_NUM_THREADS is set pre-spawn in _spawn for the OpenMP side.
+    torch.set_num_threads(1)
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     os.environ.setdefault("MASTER_PORT", "0")
     dist.init_process_group(
@@ -70,7 +74,7 @@ def _teardown_pg() -> None:
 
 
 def _all_rank_succeed_worker(rank: int, world_size: int, init_file: str, scratch_dir: str) -> None:
-    from gr00t.experiment.dist_utils import run_or_wait_on_rank0
+    from gr00t.utils.dist_utils import run_or_wait_on_rank0
 
     _setup_pg(rank, world_size, init_file)
     try:
@@ -86,7 +90,7 @@ def _all_rank_succeed_worker(rank: int, world_size: int, init_file: str, scratch
 
 
 def _rank0_raises_worker(rank: int, world_size: int, init_file: str, scratch_dir: str) -> None:
-    from gr00t.experiment.dist_utils import run_or_wait_on_rank0
+    from gr00t.utils.dist_utils import run_or_wait_on_rank0
 
     _setup_pg(rank, world_size, init_file)
     try:
@@ -121,7 +125,7 @@ def _wandb_init_failure_worker(
     propagate to every rank instead of letting non-rank-0 ranks advance
     to the next NCCL collective and hang.
     """
-    from gr00t.experiment.dist_utils import run_or_wait_on_rank0
+    from gr00t.utils.dist_utils import run_or_wait_on_rank0
 
     _setup_pg(rank, world_size, init_file)
     try:
@@ -145,6 +149,9 @@ def _spawn(target, scratch_dir: str) -> None:
     worker stalls in `dist.barrier`, pytest interrupts the whole test on
     its wall-clock budget rather than wedging the CI run.
     """
+    # Children are fresh 'spawn' interpreters that re-import torch; pin their
+    # OpenMP pools to one thread before creation so they inherit it pre-import.
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
     init_file = os.path.join(scratch_dir, "init")
     mp.spawn(
         target,
@@ -161,7 +168,7 @@ def _spawn(target, scratch_dir: str) -> None:
 
 def test_run_or_wait_on_rank0_no_dist_runs_body_once_and_yields_true():
     """Helper degenerates cleanly outside a process group."""
-    from gr00t.experiment.dist_utils import run_or_wait_on_rank0
+    from gr00t.utils.dist_utils import run_or_wait_on_rank0
 
     runs: list[bool] = []
     with run_or_wait_on_rank0() as is_rank0:
@@ -172,7 +179,7 @@ def test_run_or_wait_on_rank0_no_dist_runs_body_once_and_yields_true():
 
 def test_run_or_wait_on_rank0_no_dist_propagates_local_error():
     """Outside distributed, exceptions still propagate (no silent swallow)."""
-    from gr00t.experiment.dist_utils import run_or_wait_on_rank0
+    from gr00t.utils.dist_utils import run_or_wait_on_rank0
 
     with pytest.raises(RuntimeError, match="local-only"):
         with run_or_wait_on_rank0() as is_rank0:
@@ -182,7 +189,7 @@ def test_run_or_wait_on_rank0_no_dist_propagates_local_error():
 
 def test_run_on_rank0_no_dist_calls_fn_and_returns_result():
     """``run_on_rank0`` degenerates to a plain call returning the fn result."""
-    from gr00t.experiment.dist_utils import run_on_rank0
+    from gr00t.utils.dist_utils import run_on_rank0
 
     calls: list[tuple] = []
 
@@ -196,7 +203,7 @@ def test_run_on_rank0_no_dist_calls_fn_and_returns_result():
 
 def test_run_on_rank0_no_dist_propagates_local_error():
     """Outside distributed, a fn raise still propagates (no silent swallow)."""
-    from gr00t.experiment.dist_utils import run_on_rank0
+    from gr00t.utils.dist_utils import run_on_rank0
 
     def boom():
         raise RuntimeError("local-only")
@@ -205,8 +212,11 @@ def test_run_on_rank0_no_dist_propagates_local_error():
         run_on_rank0(boom)
 
 
+@pytest.mark.serial
 @pytest.mark.timeout(WORKER_TIMEOUT_S)
-def test_run_or_wait_on_rank0_runs_body_only_on_rank0_when_all_succeed():
+def test_run_or_wait_on_rank0_runs_body_only_on_rank0_when_all_succeed(
+    serialize_subprocess_spawns,
+):
     """Body runs on rank-0; all ranks exit cleanly."""
     with tempfile.TemporaryDirectory() as scratch_dir:
         _spawn(_all_rank_succeed_worker, scratch_dir)
@@ -221,8 +231,11 @@ def test_run_or_wait_on_rank0_runs_body_only_on_rank0_when_all_succeed():
             )
 
 
+@pytest.mark.serial
 @pytest.mark.timeout(WORKER_TIMEOUT_S)
-def test_run_or_wait_on_rank0_propagates_rank0_error_to_all_ranks():
+def test_run_or_wait_on_rank0_propagates_rank0_error_to_all_ranks(
+    serialize_subprocess_spawns,
+):
     """Contract: rank-0 raise → every rank raises; no rank hangs at barrier.
 
     This is the load-bearing assertion. Without run_or_wait_on_rank0(), the same
@@ -282,8 +295,9 @@ def _smoke_worker(rank: int, world_size: int, init_file: str, scratch_dir: str) 
         _teardown_pg()
 
 
+@pytest.mark.serial
 @pytest.mark.timeout(WORKER_TIMEOUT_S)
-def test_wandb_init_failure_propagates_to_all_ranks():
+def test_wandb_init_failure_propagates_to_all_ranks(serialize_subprocess_spawns):
     """Regression for the ``wandb.init`` call site in ``experiment.run``.
 
     Pre-fix: ``wandb.init`` was guarded only by ``if global_rank == 0:``
@@ -339,8 +353,9 @@ def test_experiment_run_wraps_wandb_init_in_run_or_wait_on_rank0():
     )
 
 
+@pytest.mark.serial
 @pytest.mark.timeout(WORKER_TIMEOUT_S)
-def test_gloo_pg_smoke():
+def test_gloo_pg_smoke(serialize_subprocess_spawns):
     """Sanity-check the gloo file:// rendezvous works on this CI host."""
     with tempfile.TemporaryDirectory() as scratch_dir:
         _spawn(_smoke_worker, scratch_dir)

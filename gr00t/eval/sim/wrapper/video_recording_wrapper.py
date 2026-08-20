@@ -24,6 +24,9 @@ import gymnasium as gym
 import numpy as np
 
 
+# Seconds to wait for ffmpeg to flush and exit before escalating to kill().
+_FFMPEG_CLOSE_GRACE_SECONDS = 30.0
+
 _H264_CODECS = {"h264", "libx264"}
 _H264_CRF = "18"
 _H264_PROFILE = "high"
@@ -72,15 +75,29 @@ class VideoRecordingWrapper(gym.Wrapper):
         self.step_count = 0
 
         self.is_success = False
+        self.is_episode_finished = False
 
         # Caption buffer height is cached on the first overlay frame of each
         # episode so that every frame in the encoded stream has the same total
         # height; the H.264 encoder rejects mid-stream shape changes.
         self.caption_height = None
 
-    def __del__(self):
+    def close(self):
+        # gym.Wrapper.close() reaps only the inner env, so without this the
+        # final episode's ffmpeg child survives until __del__ (or forever, if
+        # the GC never runs). Reap it first, then close the inner env even if
+        # the encoder errored.
         try:
             self._close_video_writer()
+        finally:
+            super().close()
+
+    def __del__(self):
+        # Best-effort fallback only; close() is the real cleanup path and may
+        # run during interpreter shutdown when attributes are already gone.
+        try:
+            if getattr(self, "video_process", None) is not None:
+                self._close_video_writer()
         except Exception:
             pass
 
@@ -155,17 +172,23 @@ class VideoRecordingWrapper(gym.Wrapper):
         process = self.video_process
         try:
             if process is not None:
-                if process.stdin is not None:
-                    try:
-                        process.stdin.close()
-                    except BrokenPipeError:
-                        pass
-                stderr = b""
-                if process.stderr is not None:
-                    stderr = process.stderr.read()
-                return_code = process.wait()
-                if return_code != 0:
-                    message = stderr.decode("utf-8", errors="replace").strip()
+                # Let communicate() own stdin: it flushes and closes it (EOF, so
+                # ffmpeg finalizes the file), drains stderr, and waits — all
+                # bounded by the timeout so a wedged encoder can never block the
+                # caller (or __del__) forever. Closing stdin ourselves first
+                # would make communicate()'s flush raise ValueError on the
+                # already-closed pipe (it only ignores BrokenPipeError).
+                try:
+                    _, stderr = process.communicate(timeout=_FFMPEG_CLOSE_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    _, stderr = process.communicate()
+                    raise RuntimeError(
+                        f"ffmpeg video recording did not exit within "
+                        f"{_FFMPEG_CLOSE_GRACE_SECONDS}s and was killed."
+                    )
+                if process.returncode != 0:
+                    message = (stderr or b"").decode("utf-8", errors="replace").strip()
                     raise RuntimeError(f"ffmpeg video recording failed: {message}")
         finally:
             self.video_process = None
@@ -348,7 +371,12 @@ class VideoRecordingWrapper(gym.Wrapper):
             #     new_filestem += f"_{case_semantic}_clf-rate{int(contact_language_following_rate)}"
 
             new_file_path = self.video_dir / f"{new_filestem}.mp4"
-            if previous_step_count >= self.max_episode_steps or self.is_success:
+            should_keep_video = (
+                self.is_episode_finished
+                or previous_step_count >= self.max_episode_steps
+                or self.is_success
+            )
+            if should_keep_video:
                 os.rename(self.file_path, new_file_path)
             else:
                 print(
@@ -357,6 +385,7 @@ class VideoRecordingWrapper(gym.Wrapper):
                 os.remove(self.file_path)
 
         self.is_success = False
+        self.is_episode_finished = False
         # "intermediate_signals" contain the metrics for 5DC tasks to indicate language following
         self.intermediate_signals = {}
 
@@ -367,6 +396,7 @@ class VideoRecordingWrapper(gym.Wrapper):
     def step(self, action):
         result = super().step(action)
         self.step_count += 1
+        self.is_episode_finished = bool(result[2] or result[3])
         if self.file_path is not None and ((self.step_count % self.steps_per_render) == 0):
             # frame = self.env.render()
             obs = result[0]

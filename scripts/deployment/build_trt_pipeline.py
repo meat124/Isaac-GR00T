@@ -50,12 +50,13 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
 import sys
 import time
 import traceback
 from typing import IO, Literal, Optional
 
-from gr00t.deployment.modes import ExportMode
+from gr00t.deployment.modes import PIPELINE_STAGE_MODES as _MODE_MAP, ExportMode
 import tyro
 
 
@@ -80,13 +81,6 @@ class Step(str, Enum):
 
 
 VALID_STEPS = tuple(Step)
-
-# Mapping from export_mode -> (build mode, verify mode, benchmark trt_mode)
-_MODE_MAP = {
-    "full_pipeline": ("full_pipeline", "n17_full_pipeline", "n17_full_pipeline"),
-    "action_head": ("full_pipeline", "action_head", "dit_only"),
-    "dit_only": ("single", "action_head", "dit_only"),
-}
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -295,7 +289,8 @@ def _run_export(cfg: PipelineConfig, onnx_dir: str, embodiment_tag, log_fp) -> N
 def _run_build(
     cfg: PipelineConfig, onnx_dir: str, engine_dir: str, log_fp, trt_severity=None
 ) -> None:
-    from build_tensorrt_engine import BuildConfig, main as build_main
+    from build_tensorrt_engine import BuildConfig, build_full_pipeline, main as build_main
+    from gr00t.deployment.modes import EXPORT_MODE_COMPONENTS
 
     build_mode, _, _ = _MODE_MAP[cfg.export_mode]
 
@@ -308,16 +303,38 @@ def _run_build(
             precision=cfg.precision,
             workspace=cfg.workspace,
         )
-    else:
-        build_cfg = BuildConfig(
-            mode="full_pipeline",
+        with _redirect_to_log(log_fp):
+            build_main(build_cfg, trt_severity=trt_severity)
+        return
+
+    # full_pipeline builder: build exactly the components this export_mode wrote
+    # ONNX for. Without this, a partial export (action_head keeps ViT/LLM/VL-SA
+    # in PyTorch) fails the build's completeness check on ONNX it never produces.
+    full = EXPORT_MODE_COMPONENTS[ExportMode.full_pipeline]
+    only = EXPORT_MODE_COMPONENTS[cfg.export_mode]
+    with _redirect_to_log(log_fp):
+        build_full_pipeline(
             onnx_dir=onnx_dir,
             engine_dir=engine_dir,
             precision=cfg.precision,
-            workspace=cfg.workspace,
+            workspace_mb=cfg.workspace,
+            trt_severity=trt_severity,
+            only=None if only == full else only,
         )
-    with _redirect_to_log(log_fp):
-        build_main(build_cfg, trt_severity=trt_severity)
+
+
+def _copy_export_metadata(onnx_dir: str, engine_dir: str) -> None:
+    """Copy ``export_metadata.json`` next to the built engines.
+
+    The runtime (``setup_tensorrt_engines`` / ``verify_n1d7_trt`` /
+    ``benchmark_inference``) reads back ``action_horizon`` / ``batch_size`` from
+    this file to validate against the loaded policy and the requested
+    ``--batch-size``, so the engine bundle must carry its own copy to be
+    self-describing. A missing source file is a no-op (older export layouts).
+    """
+    src = os.path.join(onnx_dir, "export_metadata.json")
+    if os.path.exists(src):
+        shutil.copy2(src, os.path.join(engine_dir, "export_metadata.json"))
 
 
 def _run_verify(cfg: PipelineConfig, engine_dir: str, embodiment_tag, log_fp) -> float:
@@ -457,6 +474,7 @@ def main(cfg: PipelineConfig | None = None) -> None:
                     _print_header(i, total, "Building TensorRT engines...")
                     t0 = time.time()
                     _run_build(cfg, onnx_dir, engine_dir, log_fp)
+                    _copy_export_metadata(onnx_dir, engine_dir)
                     elapsed = time.time() - t0
                     n = _count_files(engine_dir, ".engine")
                     _print_result(
