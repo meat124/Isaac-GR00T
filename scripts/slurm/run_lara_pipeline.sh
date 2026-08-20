@@ -42,9 +42,10 @@ case "$ARM" in
   lara)
     EXP="ws_lara_paper_mt5"
     EXTRA="$EXTRA $LARA_FLAGS"
-    # The tokenizer forward and its reconstruction loss ride on every step; the margin is
-    # wide because nothing has timed this path yet.
-    TIME_TRAIN="${TIME_TRAIN:-2-00:00:00}"
+    # Measured 0.6 s/step against the baseline's 0.4 (the tokenizer forward and its
+    # reconstruction loss ride on every step), so 40k steps is ~6.7 h. Asking for 48 h
+    # would only push the job behind backfill.
+    TIME_TRAIN="${TIME_TRAIN:-18:00:00}"
     EVAL_CKPTS="${EVAL_CKPTS:-10000 20000 30000 40000}"
     ;;
   guard)
@@ -53,7 +54,7 @@ case "$ARM" in
     # block the three escapes (DC shortcut, amplitude shrink, rank-1 concentration).
     EXTRA="$EXTRA $LARA_FLAGS --lara-align-center --lara-w-var 4.0 --lara-var-floor 0.4"
     EXTRA="$EXTRA --lara-w-cov 1.0 --lara-proj-layers 3 --lara-pool action"
-    TIME_TRAIN="${TIME_TRAIN:-2-00:00:00}"
+    TIME_TRAIN="${TIME_TRAIN:-18:00:00}"
     EVAL_CKPTS="${EVAL_CKPTS:-10000 20000 30000 40000}"
     ;;
   *)

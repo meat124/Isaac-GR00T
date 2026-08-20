@@ -71,6 +71,22 @@ def _patch_legacy_vit_kwargs() -> None:
     ViTEncoder._moto_lam_patched = True
 
 
+def _drop_lpips_aliases(lpips_net: nn.Module) -> None:
+    """Remove LPIPS's duplicate references to its own linear heads.
+
+    LPIPS registers each head twice -- as a ``lin{i}`` attribute and again inside the
+    ``lins`` ModuleList that ``forward`` actually indexes -- so both names appear in the
+    state dict pointing at one tensor. safetensors refuses to serialise that, which fails
+    the first checkpoint save rather than the run. Dropping the aliases leaves ``lins``
+    holding the only reference, so the network still runs and still saves.
+    """
+    if not hasattr(lpips_net, "lins"):
+        return
+    aliases = [n for n, _ in lpips_net.named_children() if n.startswith("lin") and n[3:].isdigit()]
+    for name in aliases:
+        delattr(lpips_net, name)
+
+
 class MotoLam(nn.Module):
     """moto ``LatentMotionTokenizer`` behind the small contract the action head uses."""
 
@@ -89,6 +105,7 @@ class MotoLam(nn.Module):
         # tokenizer proper but never its ViT-MAE encoder or the LPIPS network.
         self.tokenizer.image_encoder.requires_grad_(False)
         self.tokenizer.loss_fn_lpips.requires_grad_(False)
+        _drop_lpips_aliases(self.tokenizer.loss_fn_lpips)
 
         tc = int(self.tokenizer.config.m_former_config["config"]["query_num"])
         cd = int(self.tokenizer.config.codebook_dim)

@@ -37,15 +37,20 @@ export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:/home/meat124/anaconda3/envs/RoboTw
 echo "[$(date)] node=$(hostname) gpu=$CUDA_VISIBLE_DEVICES"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 cd "$REPO"
-rm -rf "$OUT"
+[ "${SKIP_BASE:-0}" = "1" ] || rm -rf "$OUT"
 
-echo "=== 1/3 baseline, 20 steps (anchor recipe) ==="
-"$VENV/bin/python" examples/AVAloha/train_avaloha.py \
-  --dataset-path "$DATASET" --base-model-path nvidia/GR00T-N1.7-3B --output-dir "$OUT" \
-  --global-batch-size 32 --max-steps 20 --learning-rate 1.4e-4 --save-steps 20 --gpus 0 \
-  -- --experiment-name smoke_base --lora-llm-rank 16
-rc_base=$?
-echo "[smoke] baseline rc=$rc_base"
+rc_base=0
+if [ "${SKIP_BASE:-0}" != "1" ]; then
+  echo "=== 1/3 baseline, 20 steps (anchor recipe) ==="
+  "$VENV/bin/python" examples/AVAloha/train_avaloha.py \
+    --dataset-path "$DATASET" --base-model-path nvidia/GR00T-N1.7-3B --output-dir "$OUT" \
+    --global-batch-size 32 --max-steps 20 --learning-rate 1.4e-4 --save-steps 20 --gpus 0 \
+    -- --experiment-name smoke_base --lora-llm-rank 16
+  rc_base=$?
+  echo "[smoke] baseline rc=$rc_base"
+else
+  echo "=== 1/3 baseline SKIPPED (SKIP_BASE=1) ==="
+fi
 
 echo "=== 2/3 aligned, 30 steps (paper settings, guards off) ==="
 "$VENV/bin/python" examples/AVAloha/train_avaloha.py \
