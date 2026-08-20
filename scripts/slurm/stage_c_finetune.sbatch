@@ -1,6 +1,6 @@
 #!/bin/bash
 # Stage C — AV-ALOHA finetune of GR00T-N1.7 (29-D [manip;head] eef). Parameterized for the
-# ablation matrix via env vars. Logs to the latent-head wandb entity.
+# ablation matrix via env vars. Logs to the latent-head wandb team.
 #
 #   STAGE_C_BASE=<stageB ckpt | nvidia/GR00T-N1.7-3B>  STAGE_C_EXP=<run name> \
 #   STAGE_C_OUT=<output dir>  STAGE_C_DATASET=<lerobot dir>  [STAGE_C_GBS=16] \
@@ -49,8 +49,9 @@ export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:/home/meat124/anaconda3/envs/RoboTw
 export WANDB_DIR=/lustre/meat124/lara_ws/runs/wandb
 mkdir -p "$WANDB_DIR"
 export WANDB_MODE=online
-# NEW runs go to the account-default entity. Do NOT pin the old entity.
-unset WANDB_ENTITY
+# Pin the team explicitly. The account's default entity is mhbench_baselines -- an
+# unrelated project -- so leaving this unset files these runs under it.
+export WANDB_ENTITY=latent-head
 # Stage in the wandb display name + a single stage tag. EXP itself must stay bare —
 # it doubles as the output subdir ($OUT/$EXP); experiment.py reads these env fallbacks.
 export WANDB_NAME="c-${EXP}"
