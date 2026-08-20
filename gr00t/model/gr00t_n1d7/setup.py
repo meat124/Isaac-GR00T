@@ -160,34 +160,34 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     n_lora,
                 )
 
-            # LARA alignment, attached after the load for the same reason as LoRA: the
-            # base checkpoint has no tokenizer weights and the load above is strict.
-            if self.config.model.use_lara:
-                for field in (
-                    "use_lara",
-                    "lara_tokenizer_path",
-                    "lara_image_encoder_path",
-                    "lara_tune_tokenizer",
-                    "lara_hidden_layer",
-                    "lara_align_weight",
-                    "lara_vae_weight",
-                    "lara_lam_horizon",
-                    "lara_video_key",
-                    "lara_pool",
-                    "lara_proj_layers",
-                    "lara_align_center",
-                    "lara_w_var",
-                    "lara_var_floor",
-                    "lara_w_cov",
-                ):
-                    setattr(model.config, field, getattr(self.config.model, field))
-                model.action_head.configure_lara(model.config)
-
         else:
             model = self.model_class(
                 self.config.model,
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
             )
+
+        # LARA alignment, attached after the load for the same reason as LoRA: the base
+        # checkpoint has no tokenizer weights and the load above is strict.
+        if self.config.model.use_lara:
+            for field in (
+                "use_lara",
+                "lara_tokenizer_path",
+                "lara_image_encoder_path",
+                "lara_tune_tokenizer",
+                "lara_hidden_layer",
+                "lara_align_weight",
+                "lara_vae_weight",
+                "lara_lam_horizon",
+                "lara_video_key",
+                "lara_pool",
+                "lara_proj_layers",
+                "lara_align_center",
+                "lara_w_var",
+                "lara_var_floor",
+                "lara_w_cov",
+            ):
+                setattr(model.config, field, getattr(self.config.model, field))
+            model.action_head.configure_lara(model.config)
 
         logging.debug(f"Model Config: {model.config}")
         with run_or_wait_on_rank0(label="final_model_config.json write") as is_rank0:

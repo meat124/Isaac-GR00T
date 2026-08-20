@@ -362,9 +362,8 @@ class Gr00tN1d7ActionHead(nn.Module):
         """LARA Eq. 6/7: align a DiT token to the tokenizer's latent motion embedding.
 
         ``all_hidden_states`` is ``[input] + one entry per DiT block``, so the configured
-        index selects a block output. Rows whose partner frame fell past the episode end
-        are dropped from both terms; the tokenizer still runs on the full batch so its
-        cost and its behaviour under DDP do not depend on the batch's contents.
+        index selects a block output. The tokenizer runs on the whole batch, so its cost
+        and its behaviour under DDP do not depend on the batch's contents.
         """
         cfg = self.config
         z, vae_loss = self.latent_motion_tokenizer.encode_and_lam_loss(
