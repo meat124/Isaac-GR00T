@@ -9,7 +9,7 @@
 # that predate results.json. The "40k n=200" column sums ckpt40000 + ckpt40000_seed100.
 set -uo pipefail
 
-RUNS=/lustre/meat124/groot_runs
+RUNS=/lustre/meat124/runs/groot_runs
 DIRS=("$@")
 if [ ${#DIRS[@]} -eq 0 ]; then
   for d in "$RUNS"/stage_c/eval_*/; do

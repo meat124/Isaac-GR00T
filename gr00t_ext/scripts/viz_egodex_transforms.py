@@ -10,7 +10,7 @@ motion direction agree with the video BEFORE any large-scale training (CLAUDE.md
 §7/§9.3). Needs no DINO weights, so it can run before HF access is granted.
 
     python gr00t_ext/scripts/viz_egodex_transforms.py \
-        --egodex-root /lustre/dataset/EgoDex --out-dir /lustre/meat124/groot_runs/viz \
+        --egodex-root /lustre/dataset/EgoDex --out-dir /lustre/meat124/runs/groot_runs/viz \
         --num-episodes 10 --horizon 15
 """
 
@@ -105,7 +105,7 @@ def visualize(episode: dict, horizon: int, out_path: Path) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description="EgoDex coordinate visualization gate")
     parser.add_argument("--egodex-root", default="/lustre/dataset/EgoDex")
-    parser.add_argument("--out-dir", default="/lustre/meat124/groot_runs/viz")
+    parser.add_argument("--out-dir", default="/lustre/meat124/runs/groot_runs/viz")
     parser.add_argument("--splits", nargs="+", default=[VAL_SPLIT])
     parser.add_argument("--num-episodes", type=int, default=10)
     parser.add_argument("--horizon", type=int, default=15)

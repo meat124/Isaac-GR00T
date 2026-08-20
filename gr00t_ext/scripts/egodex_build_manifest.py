@@ -7,7 +7,7 @@ Run from the repo root::
 
     python gr00t_ext/scripts/egodex_build_manifest.py \
         --egodex-root /lustre/dataset/EgoDex \
-        --out /lustre/meat124/groot_runs/egodex_manifest.parquet
+        --out /lustre/meat124/runs/groot_runs/egodex_manifest.parquet
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from gr00t_ext.data.egodex_paths import TRAIN_SPLITS, VAL_SPLIT, build_manifest
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build EgoDex manifest parquet")
     parser.add_argument("--egodex-root", default="/lustre/dataset/EgoDex")
-    parser.add_argument("--out", default="/lustre/meat124/groot_runs/egodex_manifest.parquet")
+    parser.add_argument("--out", default="/lustre/meat124/runs/groot_runs/egodex_manifest.parquet")
     parser.add_argument("--splits", nargs="+", default=[*TRAIN_SPLITS, VAL_SPLIT])
     parser.add_argument("--num-workers", type=int, default=8)
     args = parser.parse_args()

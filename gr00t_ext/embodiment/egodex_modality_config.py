@@ -4,7 +4,7 @@
 """GR00T modality config for EgoDex action-BC pretraining (registered as NEW_EMBODIMENT).
 
 Pass this file to ``--modality-config-path`` for ``gr00t/experiment/launch_finetune.py``
-when finetuning on the ``/lustre/meat124/egodex_lerobot`` dataset. Importing it registers
+when finetuning on the ``/lustre/meat124/datasets/egodex_lerobot`` dataset. Importing it registers
 the **same 29-D ``[manip ; head]`` eef action layout as AV-ALOHA** (single-sourced from
 ``examples/AVAloha/avaloha_layout`` via ``gr00t_ext.embodiment.egodex_embodiment``), but
 with EgoDex's single ``ego_view`` head/ego camera. Because the layout, action horizon and

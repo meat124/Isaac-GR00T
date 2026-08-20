@@ -40,19 +40,19 @@ Either way the simulator needs the submodule: `git submodule update --init exter
 
 Tasks: `slot_insertion`, `insert_peg`, `sew_needle`, `tube_transfer`, `hook_package`.
 The converted datasets already exist on this cluster at
-**`/lustre/meat124/avaloha_lerobot/<task>_3arms`** — step (1) is only for rebuilding them.
+**`/lustre/meat124/datasets/avaloha_lerobot/<task>_3arms`** — step (1) is only for rebuilding them.
 
 ```bash
 # (1) Convert a dataset (all cameras so any selection works later). One-time; already done.
 python examples/AVAloha/convert_avaloha_to_gr00t.py --task slot_insertion --num-arms 3 \
-    --cameras all --output-dir /lustre/meat124/avaloha_lerobot/slot_insertion_3arms
+    --cameras all --output-dir /lustre/meat124/datasets/avaloha_lerobot/slot_insertion_3arms
 
 # (2) Finetune. Cameras + hyperparameters come from avaloha_config.yaml; --base-model-path
 #     is either a Stage B checkpoint (ours) or nvidia/GR00T-N1.7-3B (the B3 baseline).
 #     The pipeline runs 40k steps @ global-batch 32; save_steps=10000 -> checkpoint-{10000..40000}.
 #     NOTE: the trainer NESTS its output as <output-dir>/<experiment-name>/checkpoint-N.
 python examples/AVAloha/train_avaloha.py --gpus 0 \
-    --dataset-path /lustre/meat124/avaloha_lerobot/slot_insertion_3arms \
+    --dataset-path /lustre/meat124/datasets/avaloha_lerobot/slot_insertion_3arms \
     --base-model-path nvidia/GR00T-N1.7-3B \
     --output-dir /scratch2/meat124/groot_runs/stage_c \
     --global-batch-size 32 --max-steps 40000 --learning-rate 1.4e-4 --use-wandb \
@@ -65,7 +65,7 @@ python examples/AVAloha/train_avaloha.py --gpus 0 \
 python examples/AVAloha/deploy_avaloha.py \
     --model-path /scratch2/meat124/groot_runs/stage_c/B3_slot_insertion/checkpoint-40000 \
     --task slot_insertion --num-arms 3 --episodes 100 --max-steps 400 \
-    --exec-horizon 8 --output-dir /lustre/meat124/groot_runs/stage_c/eval_B3_slot_insertion/ckpt40000
+    --exec-horizon 8 --output-dir /lustre/meat124/runs/groot_runs/stage_c/eval_B3_slot_insertion/ckpt40000
 ```
 
 Eval knobs that change the number: `--success-metric` (`seated`, default — geometry-aware;

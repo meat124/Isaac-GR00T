@@ -9,7 +9,7 @@ two latents with the relative motion over horizon ``H`` (frame ``t`` -> ``t+H``)
 
 * **z_head** — relative head/camera pose ``inv(cam_t) @ cam_{t+H}`` (9D xyz+rot6d).
 * **z_manip** — relative *gripper* pose + opening per hand. Following
-  ``/lustre/meat124/ml-egodex-gripper``, each hand is retargeted to a parallel-jaw
+  ``/lustre/meat124/lam_ws/ml-egodex-gripper``, each hand is retargeted to a parallel-jaw
   gripper (Kabsch on 4 finger joints) — so the manipulation latent supervises a
   robot-transferable gripper action, not the raw hand SE(3) (``gripper.py``).
 

@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 
 DEFAULT_MASK_ROOT = "/scratch2/meat124/egodex_masks/carego_hoi_256"
-DEFAULT_SIDECAR = "/lustre/meat124/egodex_lerobot/meta/egodex_sidecar.parquet"
+DEFAULT_SIDECAR = "/lustre/meat124/datasets/egodex_lerobot/meta/egodex_sidecar.parquet"
 MASK_SIZE = 256
 
 

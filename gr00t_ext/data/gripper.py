@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Latent Active Perception — research extension on top of Isaac GR00T N1.7.
-"""Hand -> parallel-jaw gripper retargeting (mirrors /lustre/meat124/ml-egodex-gripper).
+"""Hand -> parallel-jaw gripper retargeting (mirrors /lustre/meat124/lam_ws/ml-egodex-gripper).
 
 EgoDex is human hand tracking; the manipulation stream of the ``[manip ; head]``
 embodiment is a *gripper*, so we map each hand to a gripper pose + opening from 4

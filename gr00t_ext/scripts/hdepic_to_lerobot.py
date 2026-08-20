@@ -28,8 +28,8 @@ Note HD-EPIC HDF5s carry no ``confidences/*`` group, but the 29-D frame only rea
 ``transforms/camera`` plus the 4 finger joints per hand, so no guard is needed.
 
     python gr00t_ext/scripts/hdepic_to_lerobot.py \
-        --manifest /lustre/meat124/groot_runs/hdepic_manifest_carego.parquet \
-        --out /lustre/meat124/hdepic_lerobot --splits hdepic_train
+        --manifest /lustre/meat124/runs/groot_runs/hdepic_manifest_carego.parquet \
+        --out /lustre/meat124/datasets/hdepic_lerobot --splits hdepic_train
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ ROBOT_TYPE = "human_hdepic_manip_head"
 # mixture (see module docstring, delta 4).
 VIDEO_KEY = "zed_cam_left"
 VIDEO_ORIGINAL_KEY = f"observation.images.{VIDEO_KEY}"
-DEFAULT_MANIFEST = "/lustre/meat124/groot_runs/hdepic_manifest_carego.parquet"
+DEFAULT_MANIFEST = "/lustre/meat124/runs/groot_runs/hdepic_manifest_carego.parquet"
 
 
 def clean_narration(text: object) -> str:

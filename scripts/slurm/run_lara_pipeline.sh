@@ -17,7 +17,7 @@ set -euo pipefail
 ARM="${1:?usage: run_lara_pipeline.sh <base|lara|guard>}"
 REPO=/lustre/meat124/lara_ws/Isaac-GR00T
 RUNS=/lustre/meat124/lara_ws/runs
-DATASET="${DATASET:-/lustre/meat124/avaloha_lerobot/multitask5_3arms}"
+DATASET="${DATASET:-/lustre/meat124/datasets/avaloha_lerobot/multitask5_3arms}"
 LAM="${LAM:-/scratch2/meat124/lara_runs/lam_egodex/checkpoint-100000}"
 VITMAE="${VITMAE:-/scratch2/meat124/.cache/huggingface/hub/models--facebook--vit-mae-large/snapshots/142cb8c25e1b1bc1769997a919aa1b5a2345a6b8}"
 

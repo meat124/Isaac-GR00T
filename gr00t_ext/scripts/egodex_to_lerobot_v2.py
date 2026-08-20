@@ -21,7 +21,7 @@ the source HDF5 (byte-stable with the LeRobot episode ordering).
 
     python gr00t_ext/scripts/egodex_to_lerobot_v2.py \
         --egodex-root /lustre/dataset/EgoDex --video-root /scratch2/meat124/egodex_small \
-        --out /lustre/meat124/egodex_lerobot --splits part1 part2 part3 part4 part5 extra
+        --out /lustre/meat124/datasets/egodex_lerobot --splits part1 part2 part3 part4 part5 extra
 """
 
 from __future__ import annotations
