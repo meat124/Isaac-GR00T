@@ -329,6 +329,12 @@ def run(config: Config):
         trainer.train(resume_from_checkpoint=True)
 
     # Save final model
+    if getattr(model, "has_lora", False):
+        # With the adapters folded into its weights the final model loads like any other, also
+        # where the code knows nothing of LoRA. The checkpoints saved along the way keep their
+        # adapters, which is what resuming from them needs.
+        model.merge_lora()
+        logging.info("Merged the LoRA adapters into the final model")
     trainer.save_model()
     logging.info(f"Model saved to {output_dir}")
 

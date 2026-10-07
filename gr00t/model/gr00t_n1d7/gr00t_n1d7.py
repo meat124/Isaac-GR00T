@@ -25,6 +25,7 @@ from transformers.feature_extraction_utils import BatchFeature
 import tree
 
 from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
+from gr00t.model.modules import lora
 from gr00t.model.modules.dit import AlternateVLDiT, DiT, SelfAttentionTransformer
 from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
@@ -100,9 +101,79 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
         self.num_timestep_buckets = config.num_timestep_buckets
+        self.lora_rank = 0
+        self.lora_only = True
         self.set_trainable_parameters(
             config.tune_projector, config.tune_diffusion_model, config.tune_vlln
         )
+        if config.lora_rank > 0:
+            # A checkpoint saved with adapters: its weights only fit a model that has them.
+            self.add_lora(
+                config.lora_rank,
+                config.lora_alpha,
+                config.lora_dropout,
+                config.lora_targets,
+                config.lora_only,
+            )
+
+    def add_lora(
+        self,
+        rank: int,
+        alpha: float = 16,
+        dropout: float = 0.1,
+        targets: str = "qkv",
+        only: bool = True,
+    ):
+        """Fine-tune the transformers of the action head through LoRA adapters instead of directly.
+
+        The diffusion model and the self-attention over the backbone features keep their weights
+        frozen and get adapters on the attention layers of every block.
+
+        Args:
+            rank: Rank of the adapters.
+            alpha: Scale of the adapters' update, applied as ``alpha / rank``.
+            dropout: Dropout on the adapters' input.
+            targets: "qkv" to adapt the query, key and value projections of the attention layers,
+                "all" to also adapt their output projection and the feed-forward layers.
+            only: Train nothing but the adapters, as GR00T N1.5 does. Otherwise the parts without
+                adapters stay as `set_trainable_parameters` has them, so that the state and action
+                encoders and decoder, for one, are still trained in full.
+        """
+        if self.lora_rank > 0:
+            raise ValueError("The action head already has LoRA adapters.")
+        lora.add_lora(self.model, rank, alpha, dropout, targets)
+        lora.add_lora(self.vl_self_attention, rank, alpha, dropout, targets)
+        self.lora_rank = rank
+        self.lora_only = only
+        self._set_lora_trainable_parameters()
+
+    def merge_lora(self):
+        """Fold the LoRA adapters into the weights they adapt, leaving a model without adapters."""
+        if self.lora_rank == 0:
+            return
+        lora.merge_lora(self.model)
+        lora.merge_lora(self.vl_self_attention)
+        self.lora_rank = 0
+        self.set_trainable_parameters(
+            self.tune_projector, self.tune_diffusion_model, self.tune_vlln
+        )
+
+    def _set_lora_trainable_parameters(self):
+        if self.lora_only:
+            lora.set_only_lora_trainable(self)
+            return
+        # Of the adapted transformers only the adapters are trained; the rest is left as it is.
+        lora.set_only_lora_trainable(self.model, self.tune_diffusion_model)
+        lora.set_only_lora_trainable(self.vl_self_attention, self.tune_vlln)
+        if self.tune_diffusion_model:
+            # The timestep embedding and the output projection are not part of the transformer
+            # blocks, and small: they are trained as they are.
+            for module in (
+                self.model.timestep_encoder,
+                self.model.proj_out_1,
+                self.model.proj_out_2,
+            ):
+                module.requires_grad_(True)
 
     def set_trainable_parameters(
         self, tune_projector: bool, tune_diffusion_model: bool, tune_vlln: bool
@@ -123,6 +194,8 @@ class Gr00tN1d7ActionHead(nn.Module):
         if not tune_vlln:
             self.vlln.requires_grad_(False)
             self.vl_self_attention.requires_grad_(False)
+        if self.lora_rank > 0:
+            self._set_lora_trainable_parameters()
         logger.debug(f"Tune action head projector: {self.tune_projector}")
         logger.debug(f"Tune action head diffusion model: {self.tune_diffusion_model}")
         logger.debug(f"Tune action head vlln: {self.tune_vlln}")
@@ -528,6 +601,9 @@ class Gr00tN1d7(PreTrainedModel):
 
         # Initialize action head
         self.action_head = Gr00tN1d7ActionHead(config)
+        if config.lora_rank > 0:
+            # As in the action head: a checkpoint saved with adapters needs a model that has them.
+            self._add_backbone_lora()
         from .processing_gr00t_n1d7 import Gr00tN1d7DataCollator
 
         self.collator = Gr00tN1d7DataCollator(
@@ -535,6 +611,82 @@ class Gr00tN1d7(PreTrainedModel):
             model_type=config.backbone_model_type,
             transformers_loading_kwargs=transformers_loading_kwargs,
         )
+
+    @property
+    def has_lora(self) -> bool:
+        """Whether the model carries LoRA adapters, and its state dict their weights."""
+        return self.config.lora_rank > 0
+
+    def enable_lora(
+        self,
+        rank: int,
+        alpha: float = 16,
+        dropout: float = 0.1,
+        full_model: bool = False,
+        targets: str = "qkv",
+        only: bool = True,
+    ):
+        """Add LoRA adapters to a model whose weights are already loaded.
+
+        The options and their defaults are those of GR00T N1.5's LoRA fine-tuning. The adapters are
+        recorded in the config, so checkpoints saved from here on are loaded back into a model with
+        the same adapters. Does nothing if the model already has these adapters, as when it was
+        loaded from such a checkpoint.
+
+        Args:
+            rank: Rank of the adapters.
+            alpha: Scale of their update, applied as ``alpha / rank``.
+            dropout: Dropout on the adapters' input.
+            full_model: Adapt the backbone too, not only the action head.
+            targets: "qkv" to adapt the query, key and value projections of the attention layers,
+                "all" to also adapt their output projection and the feed-forward layers.
+            only: Train nothing but the adapters. Otherwise the parts without adapters are trained
+                as the tune flags say.
+        """
+        wanted = (rank, full_model, targets)
+        if self.has_lora:
+            config = self.config
+            if wanted != (config.lora_rank, config.lora_full_model, config.lora_targets):
+                raise ValueError(
+                    f"The model already has LoRA adapters (rank {config.lora_rank}, full model "
+                    f"{config.lora_full_model}, targets {config.lora_targets}); cannot add {wanted}."
+                )
+            return
+        self.config.lora_rank = rank
+        self.config.lora_alpha = alpha
+        self.config.lora_dropout = dropout
+        self.config.lora_full_model = full_model
+        self.config.lora_targets = targets
+        self.config.lora_only = only
+        self.action_head.add_lora(rank, alpha, dropout, targets, only)
+        self._add_backbone_lora()
+
+    def _add_backbone_lora(self):
+        config = self.config
+        if config.lora_full_model:
+            self.backbone.add_lora(
+                config.lora_rank,
+                config.lora_alpha,
+                config.lora_dropout,
+                config.lora_targets,
+                config.lora_only,
+            )
+        elif config.lora_only:
+            self.backbone.requires_grad_(False)
+
+    def merge_lora(self):
+        """Fold the LoRA adapters into the weights they adapt.
+
+        The model computes the same afterwards, and saves and loads like one trained without
+        adapters.
+        """
+        self.action_head.merge_lora()
+        self.backbone.merge_lora()
+        self.backbone.set_trainable_parameters(
+            self.backbone.tune_llm, self.backbone.tune_visual, self.backbone.tune_top_llm_layers
+        )
+        self.config.lora_rank = 0
+        self.config.lora_full_model = False
 
     def prepare_input(self, inputs: dict) -> Tuple[BatchFeature, BatchFeature]:
         """Prepare inputs for backbone and action head."""

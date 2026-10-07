@@ -7,7 +7,6 @@ from pathlib import Path
 import tyro
 
 from gr00t.data.embodiment_tags import EmbodimentTag
-from gr00t.model.gr00t_n1d7.rtc_groot import GR00TRTCConfig
 from gr00t.policy.gr00t_policy import Gr00tPolicy
 from gr00t.policy.server_client import PolicyServer
 
@@ -34,15 +33,16 @@ class Args:
     ensure_processor_symlinks: bool = True
     denoising_steps: int | None = None
 
-    # RTC (Real-Time Chunking) options
+    # RTC (Real-Time Chunking) options — drives the native inpainting in the GR00T action head.
     use_rtc: bool = False
-    """Enable Real-Time Chunking guidance during denoising."""
-    rtc_max_guidance_weight: float = 1.0
-    """Maximum guidance weight for RTC blending (clamped to 1.0 for direct blending)."""
-    rtc_execution_horizon: int = 8
-    """Number of actions executed per chunk; determines the left-over tail size. Must match EXECUTE_CHUNK_SIZE in the notebook."""
-    rtc_schedule: str = "linear"
-    """Weight schedule along the action prefix: 'linear', 'exp', 'ones', or 'zeros'."""
+    """Enable native Real-Time Chunking (action-head inpainting) for continuous chunking."""
+    rtc_execute_chunk_size: int = 8
+    """Actions executed per chunk before re-querying. Overlap = action_horizon - this value.
+    Must match EXECUTE_CHUNK_SIZE in the notebook."""
+    rtc_frozen_steps: int = 1
+    """Leading steps held fixed (velocity frozen) to absorb inference latency. Must be <= overlap."""
+    rtc_ramp_rate: float | None = None
+    """Exponential ramp rate over the unfrozen overlap. None -> use the model config's rtc_ramp_rate."""
 
 
 def _maybe_create_symlink(src: Path, dst: Path) -> None:
@@ -81,13 +81,10 @@ def main(args: Args) -> None:
         model_path=str(model_path),
         device=args.device,
         strict=args.strict,
-        rtc_config=GR00TRTCConfig(
-            enabled=args.use_rtc,
-            max_guidance_weight=args.rtc_max_guidance_weight,
-            execution_horizon=args.rtc_execution_horizon,
-            schedule=args.rtc_schedule,
-        ) if args.use_rtc else None,
-        execute_chunk_size=args.rtc_execution_horizon if args.use_rtc else None,
+        rtc_enabled=args.use_rtc,
+        execute_chunk_size=args.rtc_execute_chunk_size if args.use_rtc else None,
+        rtc_frozen_steps=args.rtc_frozen_steps,
+        rtc_ramp_rate=args.rtc_ramp_rate,
     )
 
     if args.denoising_steps is not None:
@@ -116,9 +113,9 @@ def main(args: Args) -> None:
         "action_horizon": action_horizon,
         "num_inference_timesteps": int(policy.model.action_head.num_inference_timesteps),
         "rtc_enabled": args.use_rtc,
-        "rtc_execution_horizon": args.rtc_execution_horizon if args.use_rtc else None,
-        "rtc_schedule": args.rtc_schedule if args.use_rtc else None,
-        "rtc_max_guidance_weight": args.rtc_max_guidance_weight if args.use_rtc else None,
+        "rtc_execute_chunk_size": args.rtc_execute_chunk_size if args.use_rtc else None,
+        "rtc_frozen_steps": args.rtc_frozen_steps if args.use_rtc else None,
+        "rtc_ramp_rate": policy._rtc_ramp_rate if args.use_rtc else None,
     })
 
     logging.info(
@@ -128,10 +125,37 @@ def main(args: Args) -> None:
         model_path,
         action_horizon,
         int(policy.model.action_head.num_inference_timesteps),
-        f"on(exec_horizon={args.rtc_execution_horizon}, weight={args.rtc_max_guidance_weight}, sched={args.rtc_schedule})" if args.use_rtc else "off",
+        f"on(execute_chunk_size={args.rtc_execute_chunk_size}, frozen_steps={args.rtc_frozen_steps}, ramp_rate={policy._rtc_ramp_rate})" if args.use_rtc else "off",
     )
 
     server = PolicyServer(policy=policy, host=args.host, port=args.port)
+
+    def _set_rtc(
+        enabled: bool, execute_chunk_size: int | None = None, frozen_steps: int | None = None
+    ) -> dict:
+        """Switch Real-Time Chunking on or off while serving, without reloading the model."""
+        if enabled and not execute_chunk_size:
+            raise ValueError("execute_chunk_size is required to enable RTC")
+        policy._rtc_enabled = bool(enabled)
+        if execute_chunk_size:
+            policy._execute_chunk_size = int(execute_chunk_size)
+        if frozen_steps is not None:
+            policy._rtc_frozen_steps = int(frozen_steps)
+        policy._prev_raw_action_pred = None  # the next chunk starts afresh
+        policy.metadata.update(
+            rtc_enabled=policy._rtc_enabled,
+            rtc_execute_chunk_size=policy._execute_chunk_size if policy._rtc_enabled else None,
+            rtc_frozen_steps=policy._rtc_frozen_steps if policy._rtc_enabled else None,
+        )
+        logging.info(
+            "RTC %s (execute_chunk_size=%s, frozen_steps=%s)",
+            "on" if policy._rtc_enabled else "off",
+            policy._execute_chunk_size,
+            policy._rtc_frozen_steps,
+        )
+        return {k: policy.metadata[k] for k in ("rtc_enabled", "rtc_execute_chunk_size", "rtc_frozen_steps")}
+
+    server.register_endpoint("set_rtc", _set_rtc)
     server.run()
 
 

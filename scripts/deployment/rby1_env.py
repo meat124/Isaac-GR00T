@@ -217,38 +217,51 @@ class RBY1Environment:
         self._use_remote_gripper = use_remote_gripper
         self._gripper = gripper
 
-        self._cameras = {
-            "observation/head_image": _RealsenseCamera(
-                serial=cam_head_serial,
-                width=camera_width,
-                height=camera_height,
-                fps=camera_fps,
-            ),
-            "observation/left_wrist_image": _RealsenseCamera(
-                serial=cam_left_serial,
-                width=camera_width,
-                height=camera_height,
-                fps=camera_fps,
-            ),
-            "observation/right_wrist_image": _RealsenseCamera(
-                serial=cam_right_serial,
-                width=camera_width,
-                height=camera_height,
-                fps=camera_fps,
-            ),
+        # Only initialize cameras whose serial is provided. Passing None for a
+        # serial skips that view entirely, so subset-camera checkpoints (e.g. a
+        # head-only model: cam_left_serial=cam_right_serial=None) work without a
+        # physically connected wrist camera. get_observation() emits exactly the
+        # views present here.
+        _camera_specs = {
+            "observation/head_image": cam_head_serial,
+            "observation/left_wrist_image": cam_left_serial,
+            "observation/right_wrist_image": cam_right_serial,
         }
+        self._cameras = {
+            name: _RealsenseCamera(
+                serial=serial,
+                width=camera_width,
+                height=camera_height,
+                fps=camera_fps,
+            )
+            for name, serial in _camera_specs.items()
+            if serial is not None
+        }
+        if not self._cameras:
+            raise ValueError("At least one camera serial must be provided")
+
+        # Bind attributes that close() touches up-front so that cleanup is safe
+        # even if construction fails before they are otherwise assigned.
+        self._robot = None
+        self._state_socket = None
 
         import time as _time
-        for cam in self._cameras.values():
-            cam.start()
-            _time.sleep(0.5)  # USB settle between camera starts
+        try:
+            for cam in self._cameras.values():
+                cam.start()
+                _time.sleep(0.5)  # USB settle between camera starts
 
-        self._robot = robot if robot is not None else self._create_robot(robot_ip)
-        self._robot.connect()
-        if not self._robot.is_connected():
-            raise RuntimeError("Failed to connect to robot")
+            self._robot = robot if robot is not None else self._create_robot(robot_ip)
+            self._robot.connect()
+            if not self._robot.is_connected():
+                raise RuntimeError("Failed to connect to robot")
 
-        self._prepare_robot_for_control()
+            self._prepare_robot_for_control()
+        except Exception:
+            # Release any cameras/robot already started so a partially-built env
+            # does not keep the RealSense devices busy (errno=16) on the next attempt.
+            self.close()
+            raise
 
         self._state_socket = None
         if self._state_source == "zmq":

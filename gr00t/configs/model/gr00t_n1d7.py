@@ -113,6 +113,15 @@ class Gr00tN1d7Config(PretrainedConfig):
     tune_diffusion_model: bool = True
     tune_vlln: bool = True
 
+    # LoRA fine-tuning. A rank above 0 means the model carries adapters: a checkpoint saved with
+    # them records that here, and the model is rebuilt with them when it is loaded.
+    lora_rank: int = 0
+    lora_alpha: float = 16  # the adapters' update is scaled by alpha / rank
+    lora_dropout: float = 0.1
+    lora_full_model: bool = False  # adapters on the backbone too, not only on the action head
+    lora_targets: str = "qkv"  # "qkv": attention query/key/value; "all": + output and feed-forward
+    lora_only: bool = True  # train nothing but the adapters
+
     # State augmentation parameters
     state_dropout_prob: float = 0.8  # State dropout probability
     exclude_state: bool = False  # Zero out all state inputs (ablation)

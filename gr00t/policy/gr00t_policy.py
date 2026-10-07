@@ -30,7 +30,6 @@ from transformers import AutoModel, AutoProcessor
 from gr00t.data.embodiment_tags import FINETUNE_ONLY_TAGS, POSTTRAIN_TAGS, EmbodimentTag
 from gr00t.data.interfaces import BaseProcessor
 from gr00t.data.types import MessageType, ModalityConfig, VLAStepData
-from gr00t.model.gr00t_n1d7.rtc_groot import GR00TRTCConfig
 
 from .policy import BasePolicy, PolicyWrapper
 
@@ -79,8 +78,10 @@ class Gr00tPolicy(BasePolicy):
         *,
         device: int | str,
         strict: bool = True,
-        rtc_config: GR00TRTCConfig | dict | None = None,
+        rtc_enabled: bool = False,
         execute_chunk_size: int | None = None,
+        rtc_frozen_steps: int = 1,
+        rtc_ramp_rate: float | None = None,
     ):
         """Initialize the Gr00t Policy.
 
@@ -90,9 +91,17 @@ class Gr00tPolicy(BasePolicy):
             model_path: Path to the pretrained model checkpoint directory
             device: Device to run the model on (e.g., 'cuda:0', 0, 'cpu')
             strict: Whether to enforce strict input validation (default: True)
-            rtc_config: RTC configuration. Can be a GR00TRTCConfig, a dict, or None.
-            execute_chunk_size: Number of actions to execute per chunk before re-querying.
-                Required for RTC to compute the unexecuted tail. If None, RTC is disabled.
+            rtc_enabled: Enable the native Real-Time Chunking inpainting in the action head.
+                When on, the previous prediction is fed back to anchor the start of the new
+                chunk so executed/in-flight actions stay continuous across queries.
+            execute_chunk_size: Number of actions executed per chunk before re-querying.
+                Required for RTC; the overlap (anchored) length is
+                ``action_horizon - execute_chunk_size``. The caller must execute exactly this
+                many steps between get_action() calls. If None, RTC is disabled.
+            rtc_frozen_steps: Number of leading chunk steps held fixed (velocity frozen) to
+                absorb inference latency. Must be <= the RTC overlap.
+            rtc_ramp_rate: Exponential ramp rate over the unfrozen overlap. If None, falls back
+                to the model config's ``rtc_ramp_rate``.
         """
         # Import this to register all models.
         import gr00t.model  # noqa: F401
@@ -171,12 +180,21 @@ class Gr00tPolicy(BasePolicy):
         assert len(language_delta_indices) == 1, "Only one language delta index is supported"
         self.language_key = language_keys[0]
 
-        # RTC state
-        if isinstance(rtc_config, dict):
-            rtc_config = GR00TRTCConfig.from_dict(rtc_config)
-        self._rtc_config = rtc_config or GR00TRTCConfig()
+        # RTC (Real-Time Chunking) state — drives the native inpainting in the action head.
+        self._rtc_enabled = bool(rtc_enabled)
         self._execute_chunk_size = execute_chunk_size
-        self._prev_raw_action_pred: torch.Tensor | None = None  # normalized space
+        self._rtc_frozen_steps = int(rtc_frozen_steps)
+        self._rtc_ramp_rate = (
+            float(rtc_ramp_rate)
+            if rtc_ramp_rate is not None
+            else float(getattr(self.model.config, "rtc_ramp_rate", 6.0))
+        )
+        self._prev_raw_action_pred: torch.Tensor | None = None  # normalized, padded space
+        # The same chunk as absolute targets in physical units, which is what the next chunk has to
+        # continue: the normalized values mean something else in the next chunk (see _rtc_reference).
+        self._prev_action: dict[str, np.ndarray] | None = None
+        if self._rtc_enabled and not self._execute_chunk_size:
+            raise ValueError("execute_chunk_size is required when rtc_enabled=True")
 
     def _unbatch_observation(self, value: dict[str, Any]) -> list[dict[str, Any]]:
         """Unbatch a batched observation into a list of single observations.
@@ -381,6 +399,52 @@ class Gr00tPolicy(BasePolicy):
                     f"Language batch item must be a string. Got {type(batch_item[0])}"
                 )
 
+    def _rtc_reference(
+        self, states: list[dict[str, np.ndarray]], action_horizon: int, overlap: int
+    ) -> torch.Tensor:
+        """The previous chunk, restated in the terms of the chunk about to be predicted.
+
+        The action head copies steps `action_horizon - overlap` on of what it is given to steps 0 on
+        of the new chunk. Normalized values cannot be moved like that: a relative action is an
+        offset from the state its chunk was predicted from, and it is normalized with the statistics
+        of its own step within the chunk. So the tail of the previous chunk is taken as absolute
+        targets, made relative to the current state and normalized as steps 0 on.
+
+        Args:
+            states: Current raw state of each sample, key -> (T, D).
+            action_horizon: Real (unpadded) number of steps in a chunk.
+            overlap: Steps at the end of the previous chunk that the new chunk continues.
+
+        Returns:
+            Tensor shaped like the previous prediction, with that tail rewritten.
+        """
+        start = action_horizon - overlap
+        keys = self.modality_configs["action"].modality_keys
+        reference = self._prev_raw_action_pred.clone()
+        for i, state in enumerate(states):
+            # Padded back to a full chunk with its last step, as the statistics are per step.
+            tail = {
+                k: np.concatenate(
+                    [
+                        self._prev_action[k][i, start:action_horizon],
+                        np.repeat(
+                            self._prev_action[k][i, action_horizon - 1 : action_horizon],
+                            start,
+                            axis=0,
+                        ),
+                    ]
+                )
+                for k in keys
+            }
+            encoded = self.processor.state_action_processor.apply_action(
+                tail, self.embodiment_tag.value, state=state
+            )
+            flat = np.concatenate([encoded[k] for k in keys], axis=-1)[:overlap]
+            reference[i, start:action_horizon, : flat.shape[-1]] = torch.as_tensor(
+                flat, dtype=reference.dtype, device=reference.device
+            )
+        return reference
+
     def _get_action(
         self, observation: dict[str, Any], options: dict[str, Any] | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -416,29 +480,47 @@ class Gr00tPolicy(BasePolicy):
         collated_inputs = self.collate_fn(processed_inputs)
         collated_inputs = _rec_to_dtype(collated_inputs, dtype=torch.bfloat16)
 
-        # Step 4: Compute RTC left-over from previous chunk
-        prev_chunk_left_over = None
+        # Step 4: Set up native Real-Time Chunking (RTC) for this query.
+        # The action head activates RTC when the model `inputs` dict carries an "action"
+        # entry (it is passed straight through as `action_input["action"]`). We feed back the
+        # previous chunk, restated for this query by `_rtc_reference`, and the inpainting options; the head anchors the first
+        # `overlap` steps of the new chunk to the tail of the previous one. Consistency requires
+        # the caller to execute exactly `execute_chunk_size` steps between queries, which makes
+        # the new chunk's step 0 align with the previous chunk's step `action_horizon - overlap`.
+        # NOTE: action_horizon here is the REAL (unpadded) horizon = number of action
+        # delta indices, not self._prev_raw_action_pred.shape[1] (the model pads the time
+        # dimension, e.g. 16 -> 40). Using the padded length would anchor real steps onto
+        # padded/garbage steps and corrupt the chunk.
+        options = None
         if (
-            self._rtc_config.enabled
+            self._rtc_enabled
             and self._prev_raw_action_pred is not None
-            and self._execute_chunk_size is not None
+            and self._prev_action is not None
+            and self._execute_chunk_size
         ):
-            exec_size = self._execute_chunk_size
-            prev_chunk_left_over = self._prev_raw_action_pred[:, exec_size:, :]
+            action_horizon = len(self.modality_configs["action"].delta_indices)
+            overlap = action_horizon - self._execute_chunk_size
+            if overlap > 0:
+                frozen = min(self._rtc_frozen_steps, overlap)
+                collated_inputs["inputs"]["action"] = self._rtc_reference(
+                    states, action_horizon, overlap
+                ).to(device=self.model.device, dtype=torch.bfloat16)
+                options = {
+                    "action_horizon": action_horizon,
+                    "rtc_overlap_steps": overlap,
+                    "rtc_frozen_steps": frozen,
+                    "rtc_ramp_rate": self._rtc_ramp_rate,
+                }
 
-        # Step 5: Run model inference to predict actions
-        # collated_inputs is {"inputs": batch_dict} — unpack so the model receives
-        # inputs=batch_dict (matching the original `**collated_inputs` convention).
+        # Step 5: Run model inference to predict actions.
+        # collated_inputs is {"inputs": batch_dict} — `**collated_inputs` makes the model
+        # receive inputs=batch_dict; options drives the native RTC inpainting (None = off).
         with torch.inference_mode():
-            model_pred = self.model.get_action(
-                **collated_inputs,
-                prev_chunk_left_over=prev_chunk_left_over,
-                rtc_config=self._rtc_config,
-            )
+            model_pred = self.model.get_action(**collated_inputs, options=options)
         normalized_action = model_pred["action_pred"].float()
 
-        # Save raw normalized prediction for next RTC pass
-        if self._rtc_config.enabled:
+        # Save raw normalized prediction for the next RTC pass.
+        if self._rtc_enabled:
             self._prev_raw_action_pred = normalized_action.clone().detach()
 
         # Step 5: Decode actions from normalized space back to physical units
@@ -453,6 +535,8 @@ class Gr00tPolicy(BasePolicy):
         casted_action = {
             key: value.astype(np.float32) for key, value in unnormalized_action.items()
         }
+        if self._rtc_enabled:
+            self._prev_action = casted_action
         return casted_action, {}
 
     def check_action(self, action: dict[str, Any]) -> None:
@@ -513,6 +597,7 @@ class Gr00tPolicy(BasePolicy):
             Dictionary containing the info after resetting the policy
         """
         self._prev_raw_action_pred = None
+        self._prev_action = None
         return {}
 
 

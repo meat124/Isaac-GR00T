@@ -15,6 +15,7 @@
 
 # Finetune config used for single node post-training.
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass
@@ -56,6 +57,38 @@ class FinetuneConfig:
 
     tune_diffusion_model: bool = True
     """If True, fine-tune the diffusion-based action decoder (if present in the model)."""
+
+    # --- LoRA: the first four options and their defaults are those of GR00T N1.5's fine-tuning ---
+    lora_rank: int = 0
+    """
+    Rank for the LoRA model. If 0, no LoRA will be used. With LoRA the transformers keep their
+    weights frozen and are fine-tuned through small adapters on their attention layers, which
+    needs far less GPU memory.
+    """
+
+    lora_alpha: float = 16
+    """Alpha value for the LoRA model: the adapters' update is scaled by alpha / rank."""
+
+    lora_dropout: float = 0.1
+    """Dropout rate for the LoRA model."""
+
+    lora_full_model: bool = False
+    """Whether to use the full model for LoRA. If False, only the action head is adapted."""
+
+    lora_targets: Literal["qkv", "all"] = "qkv"
+    """
+    Layers that get adapters: "qkv" for the query, key and value projections of the attention
+    layers, as in GR00T N1.5; "all" to add the attention output projection and the feed-forward
+    layers, as openpi adapts.
+    """
+
+    lora_only: bool = True
+    """
+    If True, nothing but the adapters is trained, as in GR00T N1.5: the state and action encoders
+    and decoder stay as the base model has them, whatever tune_projector says. If False, the parts
+    without adapters are trained as the tune flags say. A new embodiment needs this to be False:
+    its encoders and decoder are untrained in the base model.
+    """
 
     state_dropout_prob: float = 0.2
     """

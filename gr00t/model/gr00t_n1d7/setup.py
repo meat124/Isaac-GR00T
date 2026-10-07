@@ -125,6 +125,26 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
             )
 
+        if self.config.model.lora_rank > 0:
+            # Only now that the base weights are in place: they would not fit a model whose
+            # layers already carry adapters.
+            model.enable_lora(
+                rank=self.config.model.lora_rank,
+                alpha=self.config.model.lora_alpha,
+                dropout=self.config.model.lora_dropout,
+                full_model=self.config.model.lora_full_model,
+                targets=self.config.model.lora_targets,
+                only=self.config.model.lora_only,
+            )
+            lora_params = sum(p.numel() for n, p in model.named_parameters() if "lora_" in n)
+            logging.info(
+                f"LoRA adapters: rank {model.config.lora_rank}, alpha {model.config.lora_alpha}, "
+                f"targets {model.config.lora_targets}, "
+                f"{'full model' if model.config.lora_full_model else 'action head'}, "
+                f"{lora_params:,} parameters"
+                + (", nothing else is trained" if model.config.lora_only else "")
+            )
+
         logging.debug(f"Model Config: {model.config}")
         if get_rank() == 0:
             with open(self.save_cfg_dir / "final_model_config.json", "w") as f:

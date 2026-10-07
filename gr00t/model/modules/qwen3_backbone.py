@@ -18,6 +18,8 @@ import logging
 import torch
 from transformers.feature_extraction_utils import BatchFeature
 
+from gr00t.model.modules import lora
+
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,8 @@ class Qwen3Backbone(torch.nn.Module):
             self.model.language_model.layers.pop(-1)
 
         self.select_layer = select_layer
+        self.lora_rank = 0
+        self.lora_only = True
         self.set_trainable_parameters(tune_llm, tune_visual, tune_top_llm_layers)
         if load_bf16 and trainable_params_fp32:
             # cast trainable parameters to fp32
@@ -96,9 +100,56 @@ class Qwen3Backbone(torch.nn.Module):
                     p.data = p.data.to(torch.float32)
                     logger.debug(f"Casting trainable parameter {n} to fp32")
 
+    def add_lora(
+        self,
+        rank: int,
+        alpha: float = 16,
+        dropout: float = 0.1,
+        targets: str = "qkv",
+        only: bool = True,
+    ):
+        """Fine-tune the backbone through LoRA adapters on its attention layers.
+
+        Args:
+            rank: Rank of the adapters.
+            alpha: Scale of the adapters' update, applied as ``alpha / rank``.
+            dropout: Dropout on the adapters' input.
+            targets: Which layers are adapted; see `gr00t.model.modules.lora.target_layers`.
+            only: Train nothing but the adapters. Otherwise the vision tower is trained if
+                `tune_visual` says so.
+        """
+        if self.lora_rank > 0:
+            raise ValueError("The backbone already has LoRA adapters.")
+        if self.tune_llm and not only:
+            raise ValueError(
+                "The language model is trained in full; LoRA adapters would add nothing."
+            )
+        lora.add_lora(self.model, rank, alpha, dropout, targets)
+        self.lora_rank = rank
+        self.lora_only = only
+        self.set_trainable_parameters(self.tune_llm, self.tune_visual, self.tune_top_llm_layers)
+
+    def merge_lora(self):
+        """Fold the LoRA adapters into the weights they adapt, leaving a model without adapters."""
+        if self.lora_rank == 0:
+            return
+        lora.merge_lora(self.model)
+        self.lora_rank = 0
+        self.set_trainable_parameters(self.tune_llm, self.tune_visual, self.tune_top_llm_layers)
+
+    def _set_lora_trainable_parameters(self):
+        for name, parameter in self.named_parameters():
+            if lora.LORA_PARAMETER_MARKER in name:
+                parameter.requires_grad = True
+                # Trained parameters are kept in fp32 whatever the backbone was loaded in.
+                parameter.data = parameter.data.to(torch.float32)
+            elif self.lora_only:
+                parameter.requires_grad = False
+
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_top_llm_layers: int):
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
+        self.tune_top_llm_layers = tune_top_llm_layers
         for p in self.parameters():
             p.requires_grad = True
         if not tune_llm:
@@ -110,6 +161,12 @@ class Qwen3Backbone(torch.nn.Module):
             for layer in self.model.language_model.layers[-tune_top_llm_layers:]:
                 for param in layer.parameters():
                     param.requires_grad = True
+
+        if self.lora_rank > 0:
+            # The adapted language model trains its adapters, not its weights.
+            if not self.lora_only:
+                lora.set_only_lora_trainable(self.model.language_model, trainable=False)
+            self._set_lora_trainable_parameters()
 
         logger.debug(f"Tune backbone llm: {self.tune_llm}")
         logger.debug(f"Tune backbone visual: {self.tune_visual}")
