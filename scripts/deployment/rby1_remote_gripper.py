@@ -27,7 +27,7 @@ class Gripper:
 
         config_candidates = [
             Path(__file__).resolve().parent / "config.yaml",
-            Path("/home/hyunjin/rby1_ws/rby1-data-collection/config.yaml"),
+            Path("/home/hyunjin/rby1_ws/upc/config.yaml"),
         ]
         for config_path in config_candidates:
             try:

@@ -18,7 +18,7 @@ class Args:
 
     host: str = "0.0.0.0"
     port: int = 5556
-    config_yaml: str = "/home/hyunjin/rby1_ws/rby1-data-collection/config.yaml"
+    config_yaml: str = "/home/hyunjin/rby1_ws/upc/config.yaml"
 
     robot_ip: str | None = None
     prompt: str = "pick up the cup and place it on the plate"
