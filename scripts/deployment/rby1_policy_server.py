@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import shutil
 
 import tyro
 
@@ -50,8 +51,13 @@ def _maybe_create_symlink(src: Path, dst: Path) -> None:
         return
     # Some checkpoints keep processor artifacts under model_path/processor/.
     # Gr00tPolicy expects them at model_path root, so create lightweight links.
-    dst.symlink_to(src)
-    logging.info("Created symlink: %s -> %s", dst, src)
+    try:
+        dst.symlink_to(src)
+        logging.info("Created symlink: %s -> %s", dst, src)
+    except OSError:
+        # Filesystems such as exFAT have no symlinks.
+        shutil.copyfile(src, dst)
+        logging.info("Copied %s to %s", src, dst)
 
 
 def _ensure_processor_files(model_path: Path) -> None:
